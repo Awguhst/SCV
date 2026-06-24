@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WealthLink | Single View of Wealth</title>
+<link rel="icon" href="data:," />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        colors: {
+          background: "#131313",
+          surface: "#131313",
+          "surface-container": "#1c1b1b",
+          "surface-container-high": "#242322",
+          card: "#1a1c1e",
+          border: "#2c2e30",
+          primary: "#ffb779",
+          "primary-dark": "#cd7f32",
+          accent: "#e9c176",
+          "on-surface": "#e5e2e1",
+          "on-surface-variant": "#a89a8e",
+        },
+        fontFamily: { sans: ["Inter", "sans-serif"] },
+      },
+    },
+  };
+</script>
+<style>
+  body { background-color: #131313; color: #e5e2e1; font-family: 'Inter', sans-serif; }
+  .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 350, 'GRAD' 0, 'opsz' 24; font-size: 20px; vertical-align: middle; }
+  .wealth-card { background-color: #1a1c1e; border: 1px solid #2c2e30; transition: border-color .2s ease, box-shadow .2s ease; }
+  .wealth-card:hover { border-color: #cd7f32; box-shadow: 0 0 20px rgba(205,127,50,0.08); }
+  .nav-link.active { color: #ffb779; background: rgba(205,127,50,0.1); border-right: 3px solid #ffb779; }
+  .nav-link:not(.active):hover { background-color: #242322; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #131313; }
+  ::-webkit-scrollbar-thumb { background: #2c2e30; border-radius: 10px; }
+  .skeleton { background: linear-gradient(90deg, #1a1c1e 25%, #2c2e30 50%, #1a1c1e 75%); background-size: 200% 100%; animation: loading 1.4s infinite; }
+  @keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .view { display: none; }
+  .view.active { display: block; }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+  .toast { transition: opacity .3s ease, transform .3s ease; }
+</style>
+</head>
+<body class="flex min-h-screen">
+
+<aside class="h-screen w-64 fixed left-0 top-0 bg-surface-container border-r border-border flex flex-col py-6 z-50">
+  <div class="px-6 pb-6">
+    <h1 class="text-xl font-bold text-primary">WealthLink</h1>
+    <p class="text-on-surface-variant text-sm">Single View of Wealth</p>
+  </div>
+  <nav class="flex-1 px-3 space-y-1">
+    <button data-view="dashboard" class="nav-link active w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors">
+      <span class="material-symbols-outlined">dashboard</span> Dashboard
+    </button>
+    <button data-view="directory" class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
+      <span class="material-symbols-outlined">folder_shared</span> Directory
+    </button>
+    <button data-view="quality" class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
+      <span class="material-symbols-outlined">verified_user</span> Data Quality
+    </button>
+    <button class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors" title="Not implemented in this POC">
+      <span class="material-symbols-outlined">settings</span> Settings
+    </button>
+  </nav>
+  <div class="px-4 pt-4 border-t border-border space-y-3">
+    <a href="/docs" class="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-on-surface-variant hover:text-primary transition-colors">
+      <span class="material-symbols-outlined">description</span> API Docs
+    </a>
+    <div id="health-pill" class="flex items-center gap-2 px-3 text-xs text-on-surface-variant">
+      <span class="w-2 h-2 rounded-full bg-on-surface-variant"></span> checking...
+    </div>
+  </div>
+</aside>
+
+<main class="ml-64 flex-1 flex flex-col min-w-0">
+  <header class="flex justify-between items-center w-full px-8 h-16 bg-surface border-b border-border sticky top-0 z-40 gap-6">
+    <div class="relative max-w-md w-full">
+      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+      <input id="search-input" type="text" placeholder="Search resolved profiles, e.g. 'john smith'"
+        class="w-full bg-surface-container-high border border-border rounded-lg pl-10 pr-4 py-2 text-sm focus:border-primary focus:outline-none transition-colors" />
+    </div>
+    <div class="flex items-center gap-3 shrink-0">
+      <button id="btn-generate" class="border border-border px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-surface-container-high transition-colors">
+        <span class="material-symbols-outlined text-base">database</span> Generate Data
+      </button>
+      <button id="btn-linkage" class="bg-primary-dark text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:opacity-90 transition-opacity">
+        <span class="material-symbols-outlined text-base">play_arrow</span> Run Linkage
+      </button>
+    </div>
+  </header>
+
+  <div id="toast" class="toast fixed top-20 right-8 z-50 opacity-0 pointer-events-none"></div>
+
+  <div class="p-8 max-w-[1440px] mx-auto w-full space-y-6">
+
+    <!-- DASHBOARD VIEW -->
+    <section id="view-dashboard" class="view active space-y-6">
+      <div>
+        <h2 class="text-2xl font-bold text-on-surface">Executive Dashboard</h2>
+        <p class="text-on-surface-variant text-sm">Resolved identities and consolidated wealth across the group</p>
+      </div>
+
+      <div id="kpi-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
+
+      <div>
+        <h3 class="text-lg font-bold text-on-surface">Entity Resolution In Action</h3>
+        <p class="text-on-surface-variant text-sm">One real resolved cluster from this run, before and after Splink</p>
+      </div>
+      <div id="showcase-content"></div>
+
+      <div class="grid grid-cols-12 gap-6">
+        <div class="col-span-12 lg:col-span-7 wealth-card rounded-lg p-6">
+          <h3 class="text-base font-semibold mb-1">Wealth by Asset Class</h3>
+          <p class="text-on-surface-variant text-xs mb-4">Aggregate balances across all resolved profiles</p>
+          <div class="h-64"><canvas id="chart-assets"></canvas></div>
+        </div>
+        <div class="col-span-12 lg:col-span-5 wealth-card rounded-lg p-6">
+          <h3 class="text-base font-semibold mb-1">Records by Subsidiary</h3>
+          <p class="text-on-surface-variant text-xs mb-4">Source payroll records contributed by each subsidiary</p>
+          <div class="h-64"><canvas id="chart-subsidiaries"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DIRECTORY VIEW -->
+    <section id="view-directory" class="view space-y-6">
+      <div>
+        <h2 class="text-2xl font-bold text-on-surface">Customer Directory</h2>
+        <p class="text-on-surface-variant text-sm">Search resolved Single View of Wealth profiles by name</p>
+      </div>
+      <div class="wealth-card rounded-lg overflow-hidden">
+        <div id="directory-empty" class="p-12 text-center text-on-surface-variant text-sm">
+          Loading profiles...
+        </div>
+        <div class="overflow-x-auto">
+          <p id="directory-caption" class="px-5 py-3 text-xs text-on-surface-variant border-b border-border"></p>
+          <table id="directory-table" class="w-full text-left hidden">
+            <thead>
+              <tr class="bg-surface-container-high text-on-surface-variant text-[10px] uppercase tracking-wider">
+                <th class="px-5 py-3">Master ID</th>
+                <th class="px-5 py-3">Name</th>
+                <th class="px-5 py-3">Subsidiaries</th>
+                <th class="px-5 py-3 text-right">Salary</th>
+                <th class="px-5 py-3 text-right">Net Wealth</th>
+                <th class="px-5 py-3 text-center">Confidence</th>
+                <th class="px-5 py-3 text-center">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="directory-rows" class="divide-y divide-border/60"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- DATA QUALITY VIEW -->
+    <section id="view-quality" class="view space-y-6">
+      <div>
+        <h2 class="text-2xl font-bold text-on-surface">Data Quality &amp; Linkage Analytics</h2>
+        <p class="text-on-surface-variant text-sm">How confidently Splink resolved this run's records</p>
+      </div>
+
+      <div class="grid grid-cols-12 gap-6">
+        <div class="col-span-12 lg:col-span-6 wealth-card rounded-lg p-6">
+          <h3 class="text-base font-semibold mb-1">Match Confidence Distribution</h3>
+          <p class="text-on-surface-variant text-xs mb-4">Per-record linkage confidence across all clusters</p>
+          <div class="h-56"><canvas id="chart-confidence"></canvas></div>
+        </div>
+        <div class="col-span-12 lg:col-span-6 wealth-card rounded-lg p-6">
+          <h3 class="text-base font-semibold mb-1">Cluster Size Distribution</h3>
+          <p class="text-on-surface-variant text-xs mb-4">How many subsidiary records were linked per resolved person</p>
+          <div class="h-56"><canvas id="chart-clustersize"></canvas></div>
+        </div>
+      </div>
+
+      <div class="wealth-card rounded-lg overflow-hidden">
+        <div class="p-6 border-b border-border">
+          <h3 class="text-base font-semibold">Manual Review Queue</h3>
+          <p class="text-on-surface-variant text-xs">Lowest-confidence multi-record clusters - worst first</p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left">
+            <thead>
+              <tr class="bg-surface-container-high text-on-surface-variant text-[10px] uppercase tracking-wider">
+                <th class="px-5 py-3">Master ID</th>
+                <th class="px-5 py-3">Name</th>
+                <th class="px-5 py-3">Subsidiaries</th>
+                <th class="px-5 py-3 text-center">Records</th>
+                <th class="px-5 py-3 text-center">Confidence</th>
+              </tr>
+            </thead>
+            <tbody id="review-queue-rows" class="divide-y divide-border/60"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- PROFILE DETAIL VIEW -->
+    <section id="view-profile" class="view space-y-6">
+      <button id="btn-back-directory" class="flex items-center gap-1 text-sm text-on-surface-variant hover:text-primary transition-colors">
+        <span class="material-symbols-outlined text-base">arrow_back</span> Back to Directory
+      </button>
+
+      <div id="profile-content" class="space-y-6"></div>
+    </section>
+
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
