@@ -1,14 +1,17 @@
 """Synthetic data generation for the Single View of Wealth (SVW) demo.
 
 Generates a reproducible (seeded) population of people, simulates how
-five payroll subsidiaries would *independently* and *imperfectly* record
-those same people (name variants, address abbreviations, email-format
-differences, missing fields), and generates banking-product holdings.
+five subsidiaries would *independently* and *imperfectly* record those
+same people (name variants, address abbreviations, email-format
+differences, missing fields) - both in their payroll feeds and in their
+banking-product holdings (current accounts, savings, investments,
+mortgages), which carry the same kind of noisy identity capture rather
+than a clean, ground-truth attachment.
 
 Nothing here is real data - it is all Faker-generated - but the shapes
 and the data-quality issues mirror what a real banking group sees when
-consolidating payroll feeds from subsidiaries that have never agreed on
-a common employee identifier.
+consolidating feeds from subsidiaries that have never agreed on a common
+customer or employee identifier.
 """
 
 from __future__ import annotations
@@ -23,12 +26,12 @@ import duckdb
 import pandas as pd
 from faker import Faker
 
-from app.models import ProductBundle, Subsidiary
+from app.models import ProductBundle, RecordType, Subsidiary
 
 # ---------------------------------------------------------------------------
 # Reproducibility & scale constants
 # ---------------------------------------------------------------------------
-SEED = 666
+SEED = 777
 N_PEOPLE = 10_000
 SUBSIDIARIES = [s.value for s in Subsidiary]
 # Short, stable per-subsidiary code (the enum member name, e.g. "A") used as
@@ -50,6 +53,15 @@ PRODUCT_BUNDLE_DISTRIBUTION = {
     ProductBundle.PAYROLL_MORTGAGE: 1500,
     ProductBundle.ALL_PRODUCTS: 2500,
 }
+
+# Weights (not exact totals - the population each product type applies to is
+# itself a derived subset of N_PEOPLE, not known up front) for "how many
+# accounts of a given product type does a person who holds that product
+# have". Most customers keep a single current account / savings pot / ISA /
+# mortgage, with a shrinking minority holding more than one - often at a
+# different subsidiary, which is exactly the cross-subsidiary diversity a
+# real banking group's customer base shows.
+ACCOUNT_COUNT_WEIGHTS = {1: 0.75, 2: 0.18, 3: 0.05, 4: 0.02}
 
 DB_PATH = Path(os.environ.get("SVW_DB_PATH", Path(__file__).resolve().parent.parent / "data" / "svow.duckdb"))
 
@@ -218,6 +230,32 @@ def _vary_dob(iso_date: str, rng: random.Random) -> str:
     return iso_date
 
 
+def _noisy_identity_capture(person: dict, rng: random.Random) -> dict:
+    """Independently capture one subsidiary system's noisy snapshot of a
+    person's identity - the same noise model originally inlined in the
+    payroll loop, factored out so every record-emitting call site (payroll
+    and all four product types) shares one seven-field noise/nulling path."""
+    first_name_noisy = _vary_first_name(person["first_name"], rng)
+    last_name_noisy = _vary_last_name(person["last_name"], rng)
+    dob_noisy = _vary_dob(person["date_of_birth"], rng)
+    address_noisy = _vary_address(person["address"], rng)
+    postcode_noisy = _vary_postcode(person["postcode"], rng)
+    email_noisy = _vary_email(person["email"], person["first_name"], person["last_name"], rng)
+    phone_noisy = _vary_phone(person["phone"], rng)
+
+    # Missing-value simulation: independently null out phone/email/address.
+    return {
+        "first_name": first_name_noisy,
+        "last_name": last_name_noisy,
+        "date_of_birth": dob_noisy,
+        "email": None if rng.random() < 0.12 else email_noisy,
+        "phone": None if rng.random() < 0.12 else phone_noisy,
+        "address": None if rng.random() < 0.10 else address_noisy,
+        "city": person["city"],
+        "postcode": postcode_noisy,
+    }
+
+
 def _lognormal(rng: random.Random, floor: float, median_above_floor: float, sigma: float, high: float) -> float:
     """Sample a right-skewed value: `floor` plus a lognormal-distributed
     excess over it (median `median_above_floor`, spread `sigma`), capped at
@@ -247,6 +285,14 @@ def _shuffled_product_bundles(rng: random.Random) -> list[ProductBundle]:
         bundles.extend([bundle] * how_many)
     rng.shuffle(bundles)
     return bundles
+
+
+def _account_subsidiaries(rng: random.Random) -> list[str]:
+    """Pick which (distinct) subsidiaries hold one person's accounts of a
+    given product type: usually just one, occasionally a small handful
+    spread across the group's subsidiaries."""
+    n = rng.choices(list(ACCOUNT_COUNT_WEIGHTS), weights=list(ACCOUNT_COUNT_WEIGHTS.values()), k=1)[0]
+    return rng.sample(SUBSIDIARIES, min(n, len(SUBSIDIARIES)))
 
 
 @dataclass
@@ -310,18 +356,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
             source_record_id = f"REC{record_seq:06d}"
             employee_id = f"{SUBSIDIARY_CODES[subsidiary]}{rng.randint(100000, 999999)}"
 
-            first_name_noisy = _vary_first_name(person["first_name"], rng)
-            last_name_noisy = _vary_last_name(person["last_name"], rng)
-            dob_noisy = _vary_dob(person["date_of_birth"], rng)
-            address_noisy = _vary_address(person["address"], rng)
-            postcode_noisy = _vary_postcode(person["postcode"], rng)
-            email_noisy = _vary_email(person["email"], person["first_name"], person["last_name"], rng)
-            phone_noisy = _vary_phone(person["phone"], rng)
-
-            # Missing-value simulation: independently null out phone/email/address.
-            email_final = None if rng.random() < 0.12 else email_noisy
-            phone_final = None if rng.random() < 0.12 else phone_noisy
-            address_final = None if rng.random() < 0.10 else address_noisy
+            identity = _noisy_identity_capture(person, rng)
 
             salary = max(30_000.0, min(250_000.0, base_salary * rng.uniform(0.95, 1.05)))
             # Beta(2, 5) skews bonus toward modest payouts (mean ~14% of
@@ -335,14 +370,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
                     "person_index": idx,
                     "subsidiary": subsidiary,
                     "employee_id": employee_id,
-                    "first_name": first_name_noisy,
-                    "last_name": last_name_noisy,
-                    "date_of_birth": dob_noisy,
-                    "email": email_final,
-                    "phone": phone_final,
-                    "address": address_final,
-                    "city": person["city"],
-                    "postcode": postcode_noisy,
+                    **identity,
                     "annual_salary": round(salary, 2),
                     "bonus": round(salary * bonus_pct, 2),
                     "currency": "GBP",
@@ -352,16 +380,38 @@ def generate_all(seed: int = SEED) -> GenerationResult:
     source_records_df = pd.DataFrame(source_records)
     assert len(source_records_df) == N_RECORDS
 
-    # --- 3. Banking products ----------------------------------------------
+    # --- 3. Banking products (noisy, identity-bearing, Splink-resolved) ----
     bundles = _shuffled_product_bundles(rng)
     assert len(bundles) == N_PEOPLE
 
-    current_accounts, savings_accounts, investments, mortgages = [], [], [], []
-    for idx, bundle in enumerate(bundles):
-        salary = source_records_df.loc[source_records_df["person_index"] == idx, "annual_salary"]
-        person_salary = (
-            float(salary.mean()) if len(salary) else _lognormal(rng, 30_000, 12_000, 0.8, 250_000)
+    # Mean salary per person, precomputed once rather than re-filtering
+    # source_records_df from scratch inside the loop below.
+    salary_by_person = source_records_df.groupby("person_index")["annual_salary"].mean()
+
+    product_records: list[dict] = []
+    product_seqs = {"PR": 0, "CA": 0, "SA": 0, "IV": 0, "MG": 0}
+
+    def _next_id(prefix: str) -> str:
+        product_seqs[prefix] += 1
+        return f"{prefix}{product_seqs[prefix]:06d}"
+
+    def _emit_product(idx: int, record_type: RecordType, account_prefix: str, subsidiary: str, balance: float) -> None:
+        product_records.append(
+            {
+                "source_record_id": _next_id("PR"),
+                "person_index": idx,
+                "subsidiary": subsidiary,
+                "record_type": record_type.value,
+                "account_id": _next_id(account_prefix),
+                **_noisy_identity_capture(persons[idx], rng),
+                "balance": round(balance, 2),
+                "currency": "GBP",
+            }
         )
+
+    for idx, bundle in enumerate(bundles):
+        mean_salary = salary_by_person.get(idx)
+        person_salary = float(mean_salary) if mean_salary is not None else _lognormal(rng, 30_000, 12_000, 0.8, 250_000)
 
         has_deposits = bundle in (ProductBundle.PAYROLL_DEPOSITS, ProductBundle.ALL_PRODUCTS)
         has_investments = bundle in (ProductBundle.PAYROLL_INVESTMENTS, ProductBundle.ALL_PRODUCTS)
@@ -370,61 +420,47 @@ def generate_all(seed: int = SEED) -> GenerationResult:
         if has_deposits:
             # Current/savings balances are heavily right-skewed in reality -
             # most people keep modest buffers, a shrinking few keep much more.
-            current_accounts.append(
-                {
-                    "account_id": f"CA{idx:06d}",
-                    "person_index": idx,
-                    "account_balance": round(_lognormal(rng, 50, 2_000, 1.1, 50_000), 2),
-                }
-            )
-            savings_accounts.append(
-                {
-                    "account_id": f"SA{idx:06d}",
-                    "person_index": idx,
-                    "savings_balance": round(_lognormal(rng, 200, 10_000, 1.1, 200_000), 2),
-                }
-            )
+            # A person may hold more than one account of the same type,
+            # often at a different subsidiary - each gets its own balance
+            # draw rather than splitting a single total, and its own
+            # independent noisy identity capture (a different subsidiary
+            # system recording the same person imperfectly).
+            for subsidiary in _account_subsidiaries(rng):
+                _emit_product(idx, RecordType.CURRENT_ACCOUNT, "CA", subsidiary, _lognormal(rng, 50, 2_000, 1.1, 50_000))
+            for subsidiary in _account_subsidiaries(rng):
+                _emit_product(idx, RecordType.SAVINGS_ACCOUNT, "SA", subsidiary, _lognormal(rng, 200, 10_000, 1.1, 200_000))
         if has_investments:
-            investments.append(
-                {
-                    "account_id": f"IV{idx:06d}",
-                    "person_index": idx,
-                    "investment_balance": round(_lognormal(rng, 500, 30_000, 1.2, 500_000), 2),
-                }
-            )
+            for subsidiary in _account_subsidiaries(rng):
+                _emit_product(idx, RecordType.INVESTMENT, "IV", subsidiary, _lognormal(rng, 500, 30_000, 1.2, 500_000))
         if has_mortgage:
             # Mortgages scale with salary (affordability), within realistic UK
             # bounds. A triangular distribution peaking at ~3.5x income
             # reflects that most mortgages cluster around typical affordability
-            # multiples, with fewer people stretching to 2x or 6x.
-            mortgage_multiplier = rng.triangular(2.0, 6.0, 3.5)
-            mortgage_balance = max(50_000.0, min(600_000.0, person_salary * mortgage_multiplier))
-            mortgages.append(
-                {
-                    "account_id": f"MG{idx:06d}",
-                    "person_index": idx,
-                    "mortgage_balance": round(mortgage_balance, 2),
-                }
-            )
+            # multiples, with fewer people stretching to 2x or 6x. People with
+            # more than one mortgage (a small minority) draw an independent
+            # multiplier per mortgage rather than splitting one affordability
+            # budget across them - a known, accepted simplification.
+            for subsidiary in _account_subsidiaries(rng):
+                mortgage_multiplier = rng.triangular(2.0, 6.0, 3.5)
+                mortgage_balance = max(50_000.0, min(600_000.0, person_salary * mortgage_multiplier))
+                _emit_product(idx, RecordType.MORTGAGE, "MG", subsidiary, mortgage_balance)
 
-    current_accounts_df = pd.DataFrame(current_accounts)
-    savings_accounts_df = pd.DataFrame(savings_accounts)
-    investments_df = pd.DataFrame(investments)
-    mortgages_df = pd.DataFrame(mortgages)
+    product_records_df = pd.DataFrame(product_records)
 
     # --- 4. Persist everything to DuckDB -----------------------------------
     conn = get_connection()
     try:
         _persist(conn, "persons", persons_df)
         _persist(conn, "source_records", source_records_df)
-        _persist(conn, "current_accounts", current_accounts_df)
-        _persist(conn, "savings_accounts", savings_accounts_df)
-        _persist(conn, "investments", investments_df)
-        _persist(conn, "mortgages", mortgages_df)
+        _persist(conn, "product_records", product_records_df)
+        # Drop the legacy per-product-type tables this schema replaces, so a
+        # pre-existing data/svow.duckdb doesn't accumulate orphaned tables.
+        for legacy_table in ("current_accounts", "savings_accounts", "investments", "mortgages"):
+            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
         # Downstream linkage/wealth tables are now stale - drop them so the
         # API can detect "linkage hasn't been (re)run since the last
         # generation" rather than serving results against old data.
-        for stale_table in ("clusters", "person_cluster_map", "wealth_profiles"):
+        for stale_table in ("clusters", "wealth_profiles"):
             conn.execute(f"DROP TABLE IF EXISTS {stale_table}")
     finally:
         conn.close()

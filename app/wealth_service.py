@@ -14,14 +14,20 @@ Aggregation choices worth calling out:
   a person's accounts of that type, since someone can genuinely hold
   multiple current accounts, ISAs, etc., and each one contributes real
   wealth/liability.
-* Banking products are generated against the bank's own ground-truth
-  customer index (`person_index`) - representing the bank's existing,
-  already-deduplicated core-banking customer master - and are attached
-  to a `master_person_id` via `person_cluster_map`, the majority-vote
-  mapping built in `splink_service.run_full_pipeline`. This mirrors the
-  real workflow: the bank already knows its own product holders, and is
-  layering newly-linked *external* payroll data on top of that
-  existing identity.
+* Banking products are no longer a clean, ground-truth attachment. Each
+  product account (`product_records`) carries the same kind of noisy,
+  independently-captured identity fields payroll records do, and flows
+  through the *same* Splink dedupe pool (see `splink_service.py`). A
+  product attaches to a `master_person_id` exactly the way a payroll
+  record does - by being a member of that cluster in the `clusters`
+  table - not via any ground-truth shortcut. This means product
+  attachment is now subject to genuine linkage error (a product could in
+  principle be merged into the wrong person's cluster, or fail to merge
+  into the right one) the same way a noisy payroll record always has
+  been. Each product account is still tagged with the subsidiary it sits
+  at, and a person may hold several accounts of the same type across
+  different subsidiaries (e.g. savings at one subsidiary, a mortgage at
+  another).
 """
 
 from __future__ import annotations
@@ -51,6 +57,12 @@ def _wealth_tier(net_wealth: float) -> str:
 _WEALTH_PROFILES_SQL = """
 CREATE OR REPLACE TABLE wealth_profiles AS
 WITH name_counts AS (
+    -- Drawn from every record in the cluster regardless of origin -
+    -- payroll and banking-product records are equally first-class,
+    -- noisy identity captures now. Pulling from both also guarantees a
+    -- cluster gets a display name even in the (rare, linkage-error) case
+    -- where every payroll record ends up split into a different cluster
+    -- than this person's product records.
     SELECT
         c.master_person_id,
         s.first_name,
@@ -58,6 +70,15 @@ WITH name_counts AS (
         COUNT(*) AS occurrences
     FROM clusters c
     JOIN source_records s USING (source_record_id)
+    GROUP BY 1, 2, 3
+    UNION ALL
+    SELECT
+        c.master_person_id,
+        p.first_name,
+        p.last_name,
+        COUNT(*) AS occurrences
+    FROM clusters c
+    JOIN product_records p USING (source_record_id)
     GROUP BY 1, 2, 3
 ),
 ranked_names AS (
@@ -91,27 +112,31 @@ salary_agg AS (
     GROUP BY 1
 ),
 cash_agg AS (
-    SELECT m.master_person_id, SUM(ca.account_balance) AS cash
-    FROM current_accounts ca
-    JOIN person_cluster_map m USING (person_index)
+    SELECT c.master_person_id, SUM(p.balance) AS cash
+    FROM clusters c
+    JOIN product_records p USING (source_record_id)
+    WHERE p.record_type = 'current_account'
     GROUP BY 1
 ),
 savings_agg AS (
-    SELECT m.master_person_id, SUM(sa.savings_balance) AS savings
-    FROM savings_accounts sa
-    JOIN person_cluster_map m USING (person_index)
+    SELECT c.master_person_id, SUM(p.balance) AS savings
+    FROM clusters c
+    JOIN product_records p USING (source_record_id)
+    WHERE p.record_type = 'savings_account'
     GROUP BY 1
 ),
 investments_agg AS (
-    SELECT m.master_person_id, SUM(iv.investment_balance) AS investments
-    FROM investments iv
-    JOIN person_cluster_map m USING (person_index)
+    SELECT c.master_person_id, SUM(p.balance) AS investments
+    FROM clusters c
+    JOIN product_records p USING (source_record_id)
+    WHERE p.record_type = 'investment'
     GROUP BY 1
 ),
 mortgage_agg AS (
-    SELECT m.master_person_id, SUM(mg.mortgage_balance) AS mortgage
-    FROM mortgages mg
-    JOIN person_cluster_map m USING (person_index)
+    SELECT c.master_person_id, SUM(p.balance) AS mortgage
+    FROM clusters c
+    JOIN product_records p USING (source_record_id)
+    WHERE p.record_type = 'mortgage'
     GROUP BY 1
 )
 SELECT
@@ -206,12 +231,34 @@ def get_profile_detail(master_person_id: str) -> dict | None:
         record_cols = [c[0] for c in conn.description]
         linked_records = [dict(zip(record_cols, row)) for row in record_rows]
 
+        holding_rows = conn.execute(
+            """
+            SELECT
+                p.record_type AS product_type, p.account_id, p.subsidiary, p.balance, c.match_probability,
+                p.first_name, p.last_name, p.date_of_birth, p.email, p.phone, p.address, p.city, p.postcode
+            FROM clusters c
+            JOIN product_records p USING (source_record_id)
+            WHERE c.master_person_id = ?
+            ORDER BY product_type, subsidiary
+            """,
+            [master_person_id],
+        ).fetchall()
+        holding_cols = [c[0] for c in conn.description]
+        product_holdings = [dict(zip(holding_cols, row)) for row in holding_rows]
+
         profile["record_count"] = len(linked_records)
         profile["linked_subsidiaries"] = sorted({r["subsidiary"] for r in linked_records})
-        profile["match_probability"] = round(
-            sum(r["match_probability"] for r in linked_records) / len(linked_records), 6
-        )
+        # Usually averaged just over linked payroll records, but a cluster can
+        # (rare linkage-split edge case) end up with zero payroll members and
+        # only banking-product ones - fall back to product confidence so this
+        # never divides by zero, consistent with name_counts treating both
+        # record origins as equally first-class evidence for this cluster.
+        all_confidences = [r["match_probability"] for r in linked_records] + [
+            h["match_probability"] for h in product_holdings
+        ]
+        profile["match_probability"] = round(sum(all_confidences) / len(all_confidences), 6)
         profile["linked_records"] = linked_records
+        profile["product_holdings"] = product_holdings
 
         cities = [r["city"] for r in linked_records if r["city"]]
         postcodes = [r["postcode"] for r in linked_records if r["postcode"]]
@@ -234,13 +281,17 @@ def get_profile_detail(master_person_id: str) -> dict | None:
 
 def get_showcase_example() -> dict | None:
     """Pick one resolved cluster that makes a good "before/after Splink"
-    showcase for the dashboard: 3-4 linked records (the generator never
-    gives one ground-truth person more than 4 - a bigger cluster than that
-    is itself a false-merge linkage error, not a clean example to showcase)
-    with at least 2 different first-name spellings/variants among them, so
-    the "before" side visibly looks like unrelated people. Picked from the
-    live `clusters`/`source_records` tables only - no ground truth involved,
-    so this works exactly the same way it would in production.
+    showcase for the dashboard: 3-4 linked payroll records (the generator
+    never gives one ground-truth person more than 4 - a bigger cluster than
+    that is itself a false-merge linkage error, not a clean example to
+    showcase) with at least 2 different first-name spellings/variants among
+    them, so the "before" side visibly looks like unrelated people. Among
+    qualifying candidates, one that also holds at least one banking product
+    is preferred (so the showcase can tell the product story too), but this
+    is only a soft preference - it never overrides the hard requirements
+    above. Picked from the live `clusters`/`source_records` tables only - no
+    ground truth involved, so this works exactly the same way it would in
+    production.
 
     Returns the same shape as `get_profile_detail`, or None if no cluster
     in the current dataset meets that bar (falls back to the single
@@ -255,7 +306,14 @@ def get_showcase_example() -> dict | None:
             JOIN source_records s USING (source_record_id)
             GROUP BY c.master_person_id
             HAVING COUNT(*) BETWEEN 3 AND 4 AND COUNT(DISTINCT LOWER(s.first_name)) >= 2
-            ORDER BY COUNT(*) DESC, c.master_person_id
+            ORDER BY
+                EXISTS (
+                    SELECT 1 FROM clusters pc
+                    JOIN product_records pr USING (source_record_id)
+                    WHERE pc.master_person_id = c.master_person_id
+                ) DESC,
+                COUNT(*) DESC,
+                c.master_person_id
             LIMIT 1
             """
         ).fetchone()
@@ -280,13 +338,20 @@ def get_showcase_example() -> dict | None:
 
 _CLUSTER_STATS_CTE = """
     cluster_stats AS (
+        -- LEFT JOIN (not INNER): a cluster can consist entirely of
+        -- banking-product records with zero payroll members (a rare
+        -- linkage-split edge case) - subsidiaries/record_count stay scoped
+        -- to payroll records specifically (their documented meaning
+        -- elsewhere), but every cluster must still get a row here, or it
+        -- would be silently invisible in search/the Directory despite
+        -- correctly appearing in wealth_profiles and the dashboard totals.
         SELECT
             c.master_person_id,
-            LIST(DISTINCT s.subsidiary) AS subsidiaries,
-            COUNT(*) AS record_count,
+            COALESCE(LIST(DISTINCT s.subsidiary) FILTER (WHERE s.subsidiary IS NOT NULL), []) AS subsidiaries,
+            COUNT(s.source_record_id) AS record_count,
             AVG(c.match_probability) AS match_probability
         FROM clusters c
-        JOIN source_records s USING (source_record_id)
+        LEFT JOIN source_records s USING (source_record_id)
         GROUP BY 1
     )
 """
@@ -378,9 +443,11 @@ def get_dashboard_summary() -> dict:
         )
 
         clusters = 0
+        total_linked_records = 0
         avg_match_probability = 0.0
         if "clusters" in tables:
             clusters = conn.execute("SELECT COUNT(DISTINCT master_person_id) FROM clusters").fetchone()[0]
+            total_linked_records = conn.execute("SELECT COUNT(*) FROM clusters").fetchone()[0]
             avg_row = conn.execute("SELECT AVG(match_probability) FROM clusters").fetchone()[0]
             avg_match_probability = round(float(avg_row), 6) if avg_row is not None else 0.0
 
@@ -416,19 +483,28 @@ def get_dashboard_summary() -> dict:
                 ).fetchall()
             )
 
+        product_subsidiary_counts: dict[str, int] = {}
+        if "product_records" in tables:
+            product_subsidiary_counts = dict(
+                conn.execute(
+                    "SELECT subsidiary, COUNT(*) FROM product_records GROUP BY 1 ORDER BY 1"
+                ).fetchall()
+            )
+
         return {
             "unique_people": unique_people,
             "source_records": source_records,
             "clusters": clusters,
             "avg_match_probability": avg_match_probability,
             "total_assets": round(total_assets, 2),
-            "duplicates_found": max(source_records - clusters, 0),
+            "duplicates_found": max(total_linked_records - clusters, 0),
             "total_cash": round(total_cash, 2),
             "total_savings": round(total_savings, 2),
             "total_investments": round(total_investments, 2),
             "total_mortgage": round(total_mortgage, 2),
             "total_net_wealth": round(total_net_wealth, 2),
             "subsidiary_record_counts": subsidiary_record_counts,
+            "product_subsidiary_counts": product_subsidiary_counts,
         }
     finally:
         conn.close()

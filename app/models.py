@@ -98,28 +98,39 @@ class SourceRecord(BaseModel):
     currency: str
 
 
-class CurrentAccount(BaseModel):
+class RecordType(str, Enum):
+    """The four banking-product types a noisy `ProductRecord` can represent."""
+
+    CURRENT_ACCOUNT = "current_account"
+    SAVINGS_ACCOUNT = "savings_account"
+    INVESTMENT = "investment"
+    MORTGAGE = "mortgage"
+
+
+class ProductRecord(BaseModel):
+    """A single subsidiary system's noisy record of one person's banking-product
+    holding. Mirrors `SourceRecord`'s identity shape (the same 7 noisy comparison
+    columns Splink resolves on) - this is now a genuinely Splink-deduplicated unit
+    of record, not a clean, trusted attachment, exactly like payroll.
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    source_record_id: str
+    person_index: int = Field(..., description="Ground-truth person id; hidden from Splink.")
+    subsidiary: Subsidiary
+    record_type: RecordType
     account_id: str
-    person_index: int
-    account_balance: float
-
-
-class SavingsAccount(BaseModel):
-    account_id: str
-    person_index: int
-    savings_balance: float
-
-
-class Investment(BaseModel):
-    account_id: str
-    person_index: int
-    investment_balance: float
-
-
-class Mortgage(BaseModel):
-    account_id: str
-    person_index: int
-    mortgage_balance: float
+    first_name: str
+    last_name: str
+    date_of_birth: str = Field(..., description="ISO date string; may carry data-entry noise.")
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    city: str | None = None
+    postcode: str | None = None
+    balance: float
+    currency: str
 
 
 class ClusterAssignment(BaseModel):

@@ -9,13 +9,31 @@ design decisions inside it.
 
 | Module | Responsibility |
 |---|---|
-| `models.py` | Internal domain models (Pydantic) describing each DuckDB table's row shape: `Person` (ground truth), `SourceRecord` (noisy per-subsidiary record), banking-product rows, `ClusterAssignment`, `WealthProfile`. |
+| `models.py` | Internal domain models (Pydantic) describing each DuckDB table's row shape: `Person` (ground truth), `SourceRecord` (noisy per-subsidiary payroll record), `ProductRecord` (noisy per-subsidiary banking-product record), `ClusterAssignment`, `WealthProfile`. |
 | `schemas.py` | Public API request/response contracts (Pydantic), kept separate from `models.py` so the OpenAPI schema can evolve independently of the storage layer. |
-| `data_generator.py` | Seeded synthetic data generation: 10,000 ground-truth people, 25,000 noisy multi-subsidiary payroll records (name/address/email variants, missing values), and banking products. Persists everything to DuckDB. |
-| `splink_service.py` | Splink configuration and the train -> predict -> cluster pipeline. Persists `clusters` (source_record_id, master_person_id, match_probability) and `person_cluster_map`. |
+| `data_generator.py` | Seeded synthetic data generation: 10,000 ground-truth people, 25,000 noisy multi-subsidiary payroll records, and a variable number of noisy multi-subsidiary banking-product records (same name/address/email-variant, missing-value noise model as payroll). Persists everything to DuckDB. |
+| `splink_service.py` | Splink configuration and the train -> predict -> cluster pipeline, run once over the *combined* payroll + banking-product pool. Persists `clusters` (source_record_id, master_person_id, match_probability). |
 | `wealth_service.py` | Aggregates clusters + banking products into `wealth_profiles`; exposes lookup, search, dashboard summary, and data-quality queries. |
+| `auth.py` | JWT-based login: the `users` table (seeded with two demo accounts), password hashing, token issuing/verification, and the `get_current_user`/`require_role` FastAPI dependencies. |
+| `exports.py` | Server-rendered exports: CSV for the directory listing and the manual-review queue, PDF for a single profile dossier (via `reportlab`). Pure rendering on top of `wealth_service`'s existing queries - no new DB access. |
 | `main.py` | FastAPI app wiring, lifespan auto-bootstrap, static-frontend mount, and the HTTP endpoints. |
 | `static/` | The dashboard frontend (`index.html` + `app.js`) - plain HTML/JS + Tailwind/Chart.js CDN, served at `/`. Talks to the JSON API only; no server-side templating. |
+
+## Authentication (`auth.py`)
+
+A minimal JWT login sits in front of every data endpoint. Two roles:
+
+| Role | Can do |
+|---|---|
+| `admin` | Everything an analyst can, plus `POST /generate-data` and `POST /run-linkage`. |
+| `analyst` | Read/search/export the resolved wealth profiles. |
+
+Two demo accounts are seeded into a `users` table on first startup (`admin`/`admin123`,
+`analyst`/`analyst123` - see `DEMO_USERS` in `auth.py`) - POC-only credentials, not meant for
+production use. `/`, `/health`, `/docs`, `/redoc`, `/static/*`, and `POST /auth/login` stay
+public; everything else requires `Authorization: Bearer <token>` from `POST /auth/login`.
+The JWT signing secret comes from `SVW_JWT_SECRET` - falls back to an insecure dev default
+(logged as a warning) if unset, so the app still runs out of the box for local/demo use.
 
 ## Data model (DuckDB tables)
 
@@ -23,14 +41,20 @@ design decisions inside it.
 persons              -- ground truth only: person_index, name, dob, email, phone, address, city, postcode
 source_records       -- 25,000 noisy rows: source_record_id, person_index (hidden FK), subsidiary,
                          employee_id, name/contact fields (with noise/nulls), annual_salary, bonus, currency
-current_accounts     -- account_id, person_index, account_balance
-savings_accounts     -- account_id, person_index, savings_balance
-investments          -- account_id, person_index, investment_balance
-mortgages            -- account_id, person_index, mortgage_balance
-clusters             -- source_record_id, master_person_id, match_probability   (Splink output)
-person_cluster_map   -- person_index -> master_person_id (majority vote; used to attach banking products)
+product_records      -- noisy rows: source_record_id, person_index (hidden FK), subsidiary, record_type
+                         (current_account/savings_account/investment/mortgage), account_id, name/contact
+                         fields (same noise/nulls model as source_records), balance, currency
+clusters             -- source_record_id, master_person_id, match_probability   (Splink output, covering
+                         both source_records and product_records)
 wealth_profiles       -- master_person_id, name, salary, cash, savings, investments, mortgage, net_wealth
+users                 -- username, password_hash, role, created_at  (login accounts - see Authentication below)
 ```
+
+A person may hold zero, one, or several rows of a given product type, each tagged
+with the subsidiary it sits at and independently noised - reflecting how a real
+banking group's customers scatter products across its subsidiary banks (a mortgage
+at one, savings at another), each captured imperfectly by that subsidiary's own
+system, not just a single undifferentiated holding per type.
 
 `persons` and the `person_index` column on `source_records` exist only because this is a
 *synthetic* demo - they represent ground truth the data generator knows but a real bank
@@ -43,8 +67,10 @@ would not have a `persons` table; it would only ever see `source_records`.
 See the module docstring and inline comments in `splink_service.py` for the full rationale.
 In short:
 
-* **`dedupe_only`** link type because all subsidiaries' records live in one pool to be
-  deduplicated, not two datasets to be linked.
+* **`dedupe_only`** link type because every noisy record - payroll *and* banking-product
+  alike, from all subsidiaries - lives in one pool to be deduplicated, not two datasets
+  to be linked. `splink_service._load_linkage_pool` is what unions `source_records` and
+  `product_records` together before Splink ever sees them.
 * **`DuckDBAPI` backend** keeps the whole pipeline in-process and dependency-free.
 * **Comparisons** use Splink's purpose-built templates (`NameComparison`, `DateOfBirthComparison`,
   `EmailComparison`, `PostcodeComparison`) for the fields where naive exact-match would fail on the
@@ -59,8 +85,12 @@ In short:
   blocked on).
 * **Cluster threshold** (`CLUSTER_MATCH_THRESHOLD = 0.75`) was chosen by sweeping thresholds from
   0.3 to 0.95 and measuring pairwise precision/recall against the generator's ground truth (only
-  possible in this synthetic demo). 0.5-0.9 all produced identical, near-optimal results
-  (precision ~100%, recall ~98%); 0.75 sits in the middle of that stable plateau.
+  possible in this synthetic demo), back when the linkage pool was payroll-only. 0.5-0.9 all
+  produced identical, near-optimal results (precision ~100%, recall ~98%); 0.75 sits in the
+  middle of that stable plateau. Now that banking-product records share the same pool, this
+  threshold has not been re-swept against the larger, blended dataset - the noise model is the
+  same, but the absolute precision/recall figures above should be treated as historical
+  (payroll-only) until re-measured.
 
 ## Per-record `match_probability`
 
@@ -75,10 +105,17 @@ cluster (no duplicate found) defaults to `1.0` - there's no second record to be 
   underlying job recorded slightly differently by each subsidiary feed; summing would double-count it).
 * `cash` / `savings` / `investments` / `mortgage` are **summed** (a person can hold several
   accounts of the same type, and each contributes real wealth/liability).
-* Banking products are generated against the bank's own clean customer index (`person_index`)
-  and attached to a `master_person_id` via `person_cluster_map` - representing the bank's
-  already-deduplicated core-banking customer base being enriched with newly-linked, noisier
-  external payroll data.
+* Banking products are no longer a clean, ground-truth attachment. Each `product_records`
+  row carries the same kind of noisy, independently-captured identity fields as a payroll
+  record, flows through the *same* Splink dedupe pool, and attaches to a `master_person_id`
+  exactly the way a payroll record does - by being a member of that cluster in the `clusters`
+  table. A person may hold several accounts of the same type across different subsidiaries
+  (e.g. savings at one subsidiary, a mortgage at another), and - since attachment is now
+  genuinely resolved rather than trusted - a product's linkage is subject to the same kind of
+  error a noisy payroll record always has been (see `wealth_service.py`'s `name_counts` CTE,
+  which pulls names from both `source_records` and `product_records` so a cluster never ends
+  up nameless even in the edge case where every payroll record for a person splits away from
+  their product records).
 
 ## Profile dossier endpoint (`GET /wealth/{id}/detail`)
 
@@ -97,6 +134,12 @@ Everything on it is derived, not hardcoded:
   Where they don't, the distinct values are surfaced (e.g. "TF2R 2LQ vs. TF2R2LQ") so an
   analyst can see exactly what was noisy versus what was a stronger signal - this is what
   the page's "Match Explanation" panel renders, instead of a fabricated narrative.
+* `product_holdings` - every banking-product account (current account, savings, investment,
+  mortgage) held by this profile, each tagged with the subsidiary it sits at and its own
+  per-record `match_probability` - it's a genuinely Splink-resolved cluster member, exactly
+  like `linked_records`, just sourced from `product_records` instead of `source_records`.
+  Unlike `linked_records`, this list can legitimately be empty (an `ONLY_PAYROLL` customer
+  has no banking products on file at all).
 
 ## Data-quality endpoint (`GET /quality`)
 
@@ -105,11 +148,28 @@ Backs the dashboard's "Data Quality" page. All three pieces are computed directl
 
 * `match_probability_histogram` - bucketed counts of the per-record confidence score described
   above, so an analyst can see at a glance how much of the population is high- vs low-confidence.
-* `cluster_size_distribution` - how many resolved people had 1, 2, 3, or 4+ linked records.
+* `cluster_size_distribution` - how many resolved people had 1, 2, 3, or 4+ linked records,
+  counting every record in the cluster (payroll *and* banking-product). The "4+" bucket no
+  longer implies a likely false-merge linkage error the way it did when the pool was
+  payroll-only (capped at 4 records per person by construction) - someone with several
+  banking products can legitimately have a large, correctly-resolved cluster now.
 * `review_queue` - the lowest-confidence *multi-record* clusters (singletons are excluded - there's
   nothing to review), worst first. This is the closest thing this POC has to a human-in-the-loop
   reconciliation queue: in production, a bank wouldn't blindly trust every Splink merge, it would
   route the borderline ones to an analyst.
+
+## Exports (`exports.py`)
+
+Three server-rendered downloads, all requiring an authenticated user (any role):
+
+* `GET /export/directory.csv` - every resolved profile matching `?q=` (or all profiles, if
+  blank) as CSV. Calls `wealth_service.search_person` with a much larger limit than its
+  on-screen default of 50, so the export never silently truncates the dataset it claims to cover.
+* `GET /export/review-queue.csv` - the manual-review backlog as CSV, defaulting to the worst
+  500 clusters rather than the dashboard widget's top 10 (`?limit=` to override).
+* `GET /wealth/{id}/export/pdf` - one profile's full dossier (same data as `/wealth/{id}/detail`)
+  rendered as a PDF report via `reportlab`, alongside the dashboard's existing client-side-only
+  JSON export.
 
 ## Dashboard showcase endpoint (`GET /dashboard/showcase`)
 

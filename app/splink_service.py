@@ -1,15 +1,22 @@
 """Splink-powered entity-resolution service.
 
 This module configures and runs the probabilistic record-linkage model
-that turns 25,000 noisy, multi-subsidiary payroll records into a set of
-`master_person_id` clusters - one per real individual.
+that turns tens of thousands of noisy records - multi-subsidiary payroll
+records *and* banking-product holdings alike - into a set of
+`master_person_id` clusters, one per real individual. Banking products are
+no longer trusted via a clean ground-truth index; they carry the same
+noisy identity fields as payroll and must be resolved the same way.
 
 --------------------------------------------------------------------------
 Why these Splink configuration choices?
 --------------------------------------------------------------------------
-* **link_type="dedupe_only"**: all source records live in a single pool
-  (there is no second "dataset" to link against) - we are deduplicating
-  one combined table, not linking two separate tables.
+* **link_type="dedupe_only"**: every noisy record - payroll and product
+  alike - lives in a single pool (there is no second "dataset" to link
+  against) - we are deduplicating one combined table, not linking two
+  separate tables. `_load_linkage_pool()` is what actually unions the two
+  origin tables together before Splink ever sees them; everything below
+  this point operates purely on column names it doesn't know or care
+  whether a row came from payroll or a product holding.
 
 * **DuckDBAPI backend**: Splink's in-process DuckDB engine is fast enough
   for tens of thousands of rows, requires no external services, and
@@ -123,8 +130,27 @@ def _deterministic_rules() -> list[str]:
     ]
 
 
-def _load_source_records(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    return conn.execute("SELECT * FROM source_records").df()
+def _load_linkage_pool(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """Load every record Splink should resolve together: payroll
+    `source_records` and banking-product `product_records`, projected to
+    just the columns Splink actually uses (the unique id plus the 7 noisy
+    comparison columns). Payroll-only payload columns (`employee_id`,
+    `annual_salary`, `bonus`) and product-only ones (`account_id`,
+    `record_type`, `balance`) are deliberately left out of this projection
+    - Splink never reads them, and they're semantically different enough
+    (an employee_id is not an account_id) that merging them under shared
+    column names would be misleading rather than convenient."""
+    return conn.execute(
+        """
+        SELECT source_record_id, person_index, subsidiary,
+               first_name, last_name, date_of_birth, email, phone, address, city, postcode
+        FROM source_records
+        UNION ALL
+        SELECT source_record_id, person_index, subsidiary,
+               first_name, last_name, date_of_birth, email, phone, address, city, postcode
+        FROM product_records
+        """
+    ).df()
 
 
 def _build_and_train_linker(df: pd.DataFrame) -> Linker:
@@ -194,19 +220,17 @@ class LinkageResult:
 def run_full_pipeline() -> LinkageResult:
     """Run the end-to-end Splink pipeline and persist results to DuckDB.
 
-    Writes two tables:
-      * `clusters`: source_record_id, master_person_id, match_probability
-        (exactly the columns requested in the brief).
-      * `person_cluster_map`: ground-truth person_index -> master_person_id,
-        derived by majority vote across that person's records. This is
-        used only to attach banking products (which are generated against
-        the bank's own clean customer index) to the Splink-resolved
-        cluster - see `wealth_service.py`.
+    Writes one table, `clusters`: source_record_id, master_person_id,
+    match_probability. Every noisy record in the linkage pool - payroll
+    `source_records` *and* banking-product `product_records` alike - is
+    resolved into this same cluster space; both attach to a profile the
+    same way, via `clusters`, in `wealth_service.py`. There is no separate
+    clean-index bridge any more.
     """
     start = time.perf_counter()
     conn = get_connection()
     try:
-        source_df = _load_source_records(conn)
+        source_df = _load_linkage_pool(conn)
         if source_df.empty:
             raise RuntimeError("No source records found - call /generate-data first.")
 
@@ -225,19 +249,7 @@ def run_full_pipeline() -> LinkageResult:
 
         result_df = clusters_df[[UNIQUE_ID_COL, "master_person_id", "match_probability"]]
 
-        # Majority-vote mapping from ground-truth person_index to the
-        # resolved cluster, used to attach banking products.
-        person_index_lookup = source_df.set_index(UNIQUE_ID_COL)["person_index"]
-        vote_df = result_df.copy()
-        vote_df["person_index"] = vote_df[UNIQUE_ID_COL].map(person_index_lookup)
-        person_cluster_map = (
-            vote_df.groupby("person_index")["master_person_id"]
-            .agg(lambda s: s.value_counts().idxmax())
-            .reset_index()
-        )
-
         _persist(conn, "clusters", result_df)
-        _persist(conn, "person_cluster_map", person_cluster_map)
 
         n_records = len(source_df)
         n_clusters = result_df["master_person_id"].nunique()

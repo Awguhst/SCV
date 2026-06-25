@@ -5,6 +5,10 @@
 const GBP = new Intl.NumberFormat("en-GB", { style: "currency", currency: "GBP", maximumFractionDigits: 0 });
 const INT = new Intl.NumberFormat("en-GB");
 
+const AUTH_TOKEN_KEY = "svw_token";
+const AUTH_ROLE_KEY = "svw_role";
+const AUTH_USERNAME_KEY = "svw_username";
+
 const CHART_COLORS = {
   primary: "#ffb779",
   primaryDark: "#cd7f32",
@@ -38,14 +42,153 @@ function showToast(message, isError = false) {
   }, 4000);
 }
 
+function authHeaders() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function clearSession() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_ROLE_KEY);
+  localStorage.removeItem(AUTH_USERNAME_KEY);
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const res = await fetch(path, { ...options, headers: { ...authHeaders(), ...(options.headers || {}) } });
+  if (res.status === 401) {
+    clearSession();
+    showLogin();
+    throw new Error("Session expired - please sign in again.");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `${path} failed (${res.status})`);
   }
   return res.json();
 }
+
+// Authenticated file download - a plain <a href> can't carry the bearer
+// token, so this fetches the blob manually and triggers the save itself
+// (same client-side download pattern as the existing exportProfileJson,
+// just sourced from a server response instead of in-memory JSON).
+async function downloadFile(path, fallbackName) {
+  let res;
+  try {
+    res = await fetch(path, { headers: authHeaders() });
+  } catch (e) {
+    showToast("Download failed - network error.", true);
+    return;
+  }
+  if (res.status === 401) {
+    clearSession();
+    showLogin();
+    return;
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    showToast(body.detail || `Download failed (${res.status})`, true);
+    return;
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Auth / session
+// ---------------------------------------------------------------------------
+function showLogin(message) {
+  document.getElementById("login-overlay").classList.remove("hidden");
+  document.getElementById("app-shell").classList.add("hidden");
+  const err = document.getElementById("login-error");
+  if (message) {
+    err.textContent = message;
+    err.classList.remove("hidden");
+  } else {
+    err.classList.add("hidden");
+  }
+}
+
+function hideLogin() {
+  document.getElementById("login-overlay").classList.add("hidden");
+  document.getElementById("app-shell").classList.remove("hidden");
+}
+
+function applyRoleUI(role) {
+  const isAdmin = role === "admin";
+  document.getElementById("btn-generate").classList.toggle("hidden", !isAdmin);
+  document.getElementById("btn-linkage").classList.toggle("hidden", !isAdmin);
+}
+
+async function startApp() {
+  hideLogin();
+  applyRoleUI(localStorage.getItem(AUTH_ROLE_KEY));
+  document.getElementById("session-user").textContent =
+    `${localStorage.getItem(AUTH_USERNAME_KEY)} (${localStorage.getItem(AUTH_ROLE_KEY)})`;
+  await loadHealth();
+  await loadDashboard();
+  await runSearch("", { navigate: false }); // pre-populate Directory with the A-Z listing
+}
+
+async function restoreSession() {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (!token) {
+    showLogin();
+    return;
+  }
+  try {
+    const res = await fetch("/auth/me", { headers: authHeaders() });
+    if (!res.ok) throw new Error("invalid session");
+    const me = await res.json();
+    localStorage.setItem(AUTH_ROLE_KEY, me.role);
+    localStorage.setItem(AUTH_USERNAME_KEY, me.username);
+    await startApp();
+  } catch (e) {
+    clearSession();
+    showLogin();
+  }
+}
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const username = document.getElementById("login-username").value.trim();
+  const password = document.getElementById("login-password").value;
+  const submitBtn = document.getElementById("login-submit");
+  setBusy(submitBtn, true, "Signing in...");
+  try {
+    const res = await fetch("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username, password }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || "Login failed.");
+    }
+    const data = await res.json();
+    localStorage.setItem(AUTH_TOKEN_KEY, data.access_token);
+    localStorage.setItem(AUTH_ROLE_KEY, data.role);
+    localStorage.setItem(AUTH_USERNAME_KEY, username);
+    document.getElementById("login-password").value = "";
+    await startApp();
+  } catch (err) {
+    showLogin(err.message);
+  } finally {
+    setBusy(submitBtn, false);
+  }
+});
+
+document.getElementById("btn-logout").addEventListener("click", () => {
+  clearSession();
+  showLogin();
+});
 
 // ---------------------------------------------------------------------------
 // View switching
@@ -63,6 +206,7 @@ function switchView(view) {
 
   if (view === "dashboard") loadDashboard();
   if (view === "quality") loadQuality();
+  if (view === "settings") loadSettings();
 }
 
 document.querySelectorAll(".nav-link").forEach((btn) => {
@@ -168,7 +312,36 @@ async function loadDashboard() {
     },
   });
 
+  const productSubsidiaries = Object.keys(d.product_subsidiary_counts);
+  const productCounts = Object.values(d.product_subsidiary_counts);
+  destroyChart("productSubsidiaries");
+  charts.productSubsidiaries = new Chart(document.getElementById("chart-products-subsidiaries"), {
+    type: "bar",
+    data: {
+      labels: productSubsidiaries,
+      datasets: [{ data: productCounts, backgroundColor: CHART_COLORS.accent, borderRadius: 4 }],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#a89a8e" }, grid: { color: "#2c2e30" } },
+        y: { ticks: { color: "#a89a8e" }, grid: { color: "#2c2e30" } },
+      },
+    },
+  });
+
   loadShowcase();
+}
+
+// Normalizes a showcase response's linked_records (payroll) and
+// product_holdings into one "before Splink" evidence list - both kinds are
+// equally noisy, equally first-class records now, so the before/after story
+// should show both, not just payroll.
+function toShowcaseRecords(s) {
+  const fromPayroll = s.linked_records.map((r) => ({ ...r, type: "payroll", value: r.annual_salary }));
+  const fromProducts = s.product_holdings.map((h) => ({ ...h, type: h.product_type, value: h.balance }));
+  return [...fromPayroll, ...fromProducts];
 }
 
 function showcasePersonCard(r) {
@@ -180,7 +353,7 @@ function showcasePersonCard(r) {
         </div>
         <div class="min-w-0">
           <p class="font-semibold text-sm truncate">${r.first_name} ${r.last_name}</p>
-          <p class="text-[11px] text-on-surface-variant truncate">${r.subsidiary}</p>
+          <p class="text-[11px] text-on-surface-variant truncate">${r.subsidiary} &middot; ${FINANCIAL_TYPE_LABELS[r.type] ?? r.type} ${GBP.format(r.value)}</p>
         </div>
       </div>
       <p class="text-xs text-on-surface-variant truncate">${r.email ?? "no email on file"}</p>
@@ -200,13 +373,15 @@ async function loadShowcase() {
     return;
   }
 
+  const showcaseRecords = toShowcaseRecords(s);
+
   container.innerHTML = `
     <div class="grid grid-cols-12 gap-4 items-stretch">
       <div class="col-span-12 lg:col-span-5 border-2 border-dashed border-red-500/30 rounded-lg p-5 bg-red-500/[0.03]">
         <span class="badge bg-red-500/15 text-red-400 mb-3 inline-block">Before Splink</span>
-        <p class="text-sm text-on-surface-variant mb-4">${s.record_count} separate subsidiary payroll records look like ${s.record_count} different people</p>
+        <p class="text-sm text-on-surface-variant mb-4">${showcaseRecords.length} separate subsidiary records (payroll and banking products) look like ${showcaseRecords.length} different people</p>
         <div class="space-y-3">
-          ${s.linked_records.map(showcasePersonCard).join("")}
+          ${showcaseRecords.map(showcasePersonCard).join("")}
         </div>
       </div>
 
@@ -233,6 +408,12 @@ async function loadShowcase() {
           <div><p class="text-[11px] text-on-surface-variant">Salary</p><p class="font-semibold">${GBP.format(s.salary)}</p></div>
           <div><p class="text-[11px] text-on-surface-variant">Net Wealth</p><p class="font-semibold">${GBP.format(s.net_wealth)}</p></div>
         </div>
+        ${
+          s.product_holdings.length
+            ? `<p class="text-[11px] text-on-surface-variant">Banking products</p>
+               <p class="text-sm mb-4">${s.product_holdings.map((h) => `${FINANCIAL_TYPE_LABELS[h.product_type]} (${h.subsidiary})`).join(", ")}</p>`
+            : ""
+        }
         <button id="btn-showcase-profile" class="mt-auto text-xs font-bold text-primary hover:underline flex items-center gap-1 self-start">
           View full profile <span class="material-symbols-outlined text-sm">arrow_forward</span>
         </button>
@@ -328,6 +509,11 @@ document.getElementById("search-input").addEventListener("input", (e) => {
   if (e.target.value.trim() === "") runSearch("", { navigate: false });
 });
 
+document.getElementById("btn-export-directory").addEventListener("click", () => {
+  const q = document.getElementById("search-input").value.trim();
+  downloadFile(`/export/directory.csv?q=${encodeURIComponent(q)}`, "directory.csv");
+});
+
 // ---------------------------------------------------------------------------
 // Profile detail page
 // ---------------------------------------------------------------------------
@@ -378,6 +564,64 @@ function linkedRecordRow(r) {
     </div>`;
 }
 
+const PRODUCT_TYPE_ICONS = {
+  current_account: "account_balance_wallet",
+  savings_account: "savings",
+  investment: "monitoring",
+  mortgage: "domain",
+};
+const PRODUCT_TYPE_LABELS = {
+  current_account: "Current Account",
+  savings_account: "Savings Account",
+  investment: "Investment",
+  mortgage: "Mortgage",
+};
+const FINANCIAL_TYPE_ICONS = { payroll: "payments", ...PRODUCT_TYPE_ICONS };
+const FINANCIAL_TYPE_LABELS = { payroll: "Salary", ...PRODUCT_TYPE_LABELS };
+
+// Normalizes a profile's linked_records (salary) and product_holdings into
+// one list of financial records - salary and banking products are equally
+// first-class, Splink-resolved cluster members now, so they belong in one
+// itemized view rather than a separate chart and a separate list.
+function toFinancialHoldings(p) {
+  const fromPayroll = p.linked_records.map((r) => ({
+    type: "payroll",
+    subsidiary: r.subsidiary,
+    detail: r.employee_id,
+    value: r.annual_salary,
+    match_probability: r.match_probability,
+  }));
+  const fromProducts = p.product_holdings.map((h) => ({
+    type: h.product_type,
+    subsidiary: h.subsidiary,
+    detail: h.account_id,
+    value: h.balance,
+    match_probability: h.match_probability,
+  }));
+  return [...fromPayroll, ...fromProducts].sort(
+    (a, b) => a.subsidiary.localeCompare(b.subsidiary) || a.type.localeCompare(b.type)
+  );
+}
+
+function financialHoldingRow(h) {
+  return `
+    <div class="p-5 flex items-center justify-between gap-4">
+      <div class="flex items-center gap-4 min-w-0">
+        <div class="w-10 h-10 rounded bg-surface-container-high flex items-center justify-center shrink-0">
+          <span class="material-symbols-outlined text-primary">${FINANCIAL_TYPE_ICONS[h.type] ?? "account_balance"}</span>
+        </div>
+        <div class="min-w-0">
+          <p class="font-semibold text-sm">${FINANCIAL_TYPE_LABELS[h.type] ?? h.type} <span class="text-on-surface-variant font-normal">&middot; ${h.subsidiary}</span></p>
+          <p class="text-on-surface-variant text-xs truncate">${h.detail}</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="font-semibold text-sm">${GBP.format(h.value)}</span>
+        ${confidenceBadge(h.match_probability)}
+      </div>
+    </div>`;
+}
+
 function fieldAgreementRow(f) {
   const label = f.field.replace(/_/g, " ");
   if (f.is_consistent) {
@@ -425,6 +669,7 @@ async function loadProfile(masterPersonId) {
   const totalLiquid = p.cash + p.savings + p.investments;
   const pct = (v) => (totalLiquid > 0 ? Math.round((v / totalLiquid) * 100) : 0);
   const tierClass = WEALTH_TIER_CLASSES[p.wealth_tier] || WEALTH_TIER_CLASSES["Mass Market"];
+  const financialHoldings = toFinancialHoldings(p);
 
   container.innerHTML = `
     <div class="grid grid-cols-12 gap-6">
@@ -483,10 +728,18 @@ async function loadProfile(masterPersonId) {
           </div>
         </div>
 
-        <div class="wealth-card rounded-lg p-6">
-          <h3 class="text-base font-semibold mb-1">Salary Reported by Subsidiary</h3>
-          <p class="text-on-surface-variant text-xs mb-4">Each linked record's reported annual salary</p>
-          <div class="h-48"><canvas id="chart-profile-salary"></canvas></div>
+        <div class="wealth-card rounded-lg overflow-hidden">
+          <div class="p-6 border-b border-border">
+            <h3 class="text-base font-semibold">Financial Holdings by Subsidiary</h3>
+            <p class="text-on-surface-variant text-xs">Salary and banking products linked to this profile, by subsidiary</p>
+          </div>
+          <div class="divide-y divide-border/60">
+            ${
+              financialHoldings.length
+                ? financialHoldings.map(financialHoldingRow).join("")
+                : `<div class="p-5 text-center text-on-surface-variant text-sm">No financial records on file.</div>`
+            }
+          </div>
         </div>
       </div>
 
@@ -504,6 +757,10 @@ async function loadProfile(masterPersonId) {
               <span class="flex items-center gap-3"><span class="material-symbols-outlined text-on-surface-variant">download</span> Export Linked Data (JSON)</span>
               <span class="material-symbols-outlined text-xs text-on-surface-variant">chevron_right</span>
             </button>
+            <button id="btn-export-profile-pdf" class="w-full flex items-center justify-between p-3 rounded hover:bg-surface-container-high transition-colors text-sm font-medium">
+              <span class="flex items-center gap-3"><span class="material-symbols-outlined text-on-surface-variant">picture_as_pdf</span> Export Profile Report (PDF)</span>
+              <span class="material-symbols-outlined text-xs text-on-surface-variant">chevron_right</span>
+            </button>
             <button id="btn-copy-id" class="w-full flex items-center justify-between p-3 rounded hover:bg-surface-container-high transition-colors text-sm font-medium">
               <span class="flex items-center gap-3"><span class="material-symbols-outlined text-on-surface-variant">content_copy</span> Copy Master ID</span>
               <span class="material-symbols-outlined text-xs text-on-surface-variant">chevron_right</span>
@@ -515,26 +772,12 @@ async function loadProfile(masterPersonId) {
   `;
 
   document.getElementById("btn-export-profile").addEventListener("click", () => exportProfileJson(p));
+  document.getElementById("btn-export-profile-pdf").addEventListener("click", () =>
+    downloadFile(`/wealth/${p.master_person_id}/export/pdf`, `${p.master_person_id}.pdf`)
+  );
   document.getElementById("btn-copy-id").addEventListener("click", () => {
     navigator.clipboard?.writeText(p.master_person_id);
     showToast(`Copied ${p.master_person_id} to clipboard.`);
-  });
-
-  destroyChart("profileSalary");
-  charts.profileSalary = new Chart(document.getElementById("chart-profile-salary"), {
-    type: "bar",
-    data: {
-      labels: p.linked_records.map((r) => r.subsidiary),
-      datasets: [{ data: p.linked_records.map((r) => r.annual_salary), backgroundColor: CHART_COLORS.primary, borderRadius: 4 }],
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { color: "#a89a8e" }, grid: { display: false } },
-        y: { ticks: { color: "#a89a8e" }, grid: { color: "#2c2e30" } },
-      },
-    },
   });
 }
 
@@ -605,6 +848,10 @@ async function loadQuality() {
   }
 }
 
+document.getElementById("btn-export-review-queue").addEventListener("click", () => {
+  downloadFile("/export/review-queue.csv", "review-queue.csv");
+});
+
 // ---------------------------------------------------------------------------
 // Pipeline action buttons
 // ---------------------------------------------------------------------------
@@ -620,31 +867,35 @@ function setBusy(btn, busy, busyLabel) {
   }
 }
 
-document.getElementById("btn-generate").addEventListener("click", async () => {
-  const btn = document.getElementById("btn-generate");
+function activeView() {
+  return document.querySelector(".view.active")?.id.replace("view-", "");
+}
+
+async function generateData(btn) {
   setBusy(btn, true, "Generating...");
   try {
     const result = await api("/generate-data", { method: "POST" });
     showToast(`Generated ${INT.format(result.people)} people / ${INT.format(result.records)} records.`);
     await loadHealth();
-    if (document.getElementById("view-dashboard").classList.contains("active")) await loadDashboard();
+    const view = activeView();
+    if (view === "dashboard") await loadDashboard();
   } catch (e) {
     showToast(e.message, true);
   } finally {
     setBusy(btn, false);
   }
-});
+}
 
-document.getElementById("btn-linkage").addEventListener("click", async () => {
-  const btn = document.getElementById("btn-linkage");
+async function runLinkage(btn) {
   setBusy(btn, true, "Running Splink (~20s)...");
   try {
     const result = await api("/run-linkage", { method: "POST" });
     showToast(`Linkage complete: ${INT.format(result.clusters)} clusters, ${INT.format(result.duplicates_found)} duplicates found.`);
     await loadHealth();
-    if (document.getElementById("view-dashboard").classList.contains("active")) await loadDashboard();
-    if (document.getElementById("view-quality").classList.contains("active")) await loadQuality();
-    if (document.getElementById("view-directory").classList.contains("active")) {
+    const view = activeView();
+    if (view === "dashboard") await loadDashboard();
+    if (view === "quality") await loadQuality();
+    if (view === "directory") {
       await runSearch(document.getElementById("search-input").value, { navigate: false });
     }
   } catch (e) {
@@ -652,11 +903,33 @@ document.getElementById("btn-linkage").addEventListener("click", async () => {
   } finally {
     setBusy(btn, false);
   }
+}
+
+document.getElementById("btn-generate").addEventListener("click", (e) => generateData(e.currentTarget));
+document.getElementById("btn-linkage").addEventListener("click", (e) => runLinkage(e.currentTarget));
+
+// ---------------------------------------------------------------------------
+// Settings view
+// ---------------------------------------------------------------------------
+const ROLE_BADGE_CLASSES = {
+  admin: "text-primary bg-primary/10 border-primary/20",
+  analyst: "text-on-surface-variant bg-surface-container-high border-border",
+};
+
+function loadSettings() {
+  const username = localStorage.getItem(AUTH_USERNAME_KEY);
+  const role = localStorage.getItem(AUTH_ROLE_KEY);
+  document.getElementById("settings-username").textContent = username;
+  document.getElementById("settings-role").innerHTML =
+    `<span class="badge border ${ROLE_BADGE_CLASSES[role] || ROLE_BADGE_CLASSES.analyst}">${role}</span>`;
+}
+
+document.getElementById("btn-logout-settings").addEventListener("click", () => {
+  clearSession();
+  showLogin();
 });
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
-loadHealth();
-loadDashboard();
-runSearch("", { navigate: false }); // pre-populate Directory with the A-Z listing
+restoreSession();

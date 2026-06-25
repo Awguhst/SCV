@@ -21,11 +21,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 
-from app import data_generator, splink_service, wealth_service
+from app import auth, data_generator, exports, splink_service, wealth_service
 from app.schemas import (
     DashboardSummaryResponse,
     GenerateDataResponse,
@@ -34,6 +35,8 @@ from app.schemas import (
     RunLinkageResponse,
     SearchResponse,
     SearchResultItem,
+    TokenResponse,
+    UserResponse,
     WealthProfileDetailResponse,
     WealthProfileResponse,
 )
@@ -48,6 +51,9 @@ def _bootstrap_demo_data() -> None:
     """Generate data and run linkage automatically if this is a fresh
     database, so /docs is immediately explorable without manual setup.
     Safe to skip - existing data/linkage/profiles are left untouched."""
+    auth.seed_demo_users()
+    logger.info("Demo users ready (admin, analyst).")
+
     if not data_generator.has_generated_data():
         logger.info("No data found - generating synthetic dataset (10,000 people / 25,000 records)...")
         result = data_generator.generate_all()
@@ -110,7 +116,29 @@ def health() -> HealthResponse:
     )
 
 
-@app.post("/generate-data", response_model=GenerateDataResponse, tags=["Data Generation"])
+@app.post("/auth/login", response_model=TokenResponse, tags=["Auth"])
+def login(form: OAuth2PasswordRequestForm = Depends()) -> TokenResponse:
+    """Exchange a username/password for a bearer token. Demo accounts:
+    `admin` / `admin123` (full access) and `analyst` / `analyst123`
+    (read/export access) - see `app/auth.py`."""
+    user = auth.authenticate_user(form.username, form.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Incorrect username or password")
+    token = auth.create_access_token(user["username"], user["role"])
+    return TokenResponse(access_token=token, role=user["role"])
+
+
+@app.get("/auth/me", response_model=UserResponse, tags=["Auth"])
+def me(user: dict = Depends(auth.get_current_user)) -> UserResponse:
+    return UserResponse(username=user["username"], role=user["role"])
+
+
+@app.post(
+    "/generate-data",
+    response_model=GenerateDataResponse,
+    tags=["Data Generation"],
+    dependencies=[Depends(auth.require_role("admin"))],
+)
 def generate_data() -> GenerateDataResponse:
     """Generate (or regenerate) the synthetic dataset: 10,000 ground-truth
     people, 25,000 noisy multi-subsidiary payroll records, and banking
@@ -124,7 +152,12 @@ def generate_data() -> GenerateDataResponse:
     return GenerateDataResponse(people=result.people, records=result.records)
 
 
-@app.post("/run-linkage", response_model=RunLinkageResponse, tags=["Entity Resolution"])
+@app.post(
+    "/run-linkage",
+    response_model=RunLinkageResponse,
+    tags=["Entity Resolution"],
+    dependencies=[Depends(auth.require_role("admin"))],
+)
 def run_linkage() -> RunLinkageResponse:
     """Run the Splink entity-resolution pipeline over the generated source
     records: trains the probabilistic model, predicts pairwise match
@@ -146,7 +179,12 @@ def run_linkage() -> RunLinkageResponse:
     return RunLinkageResponse(clusters=result.clusters, duplicates_found=result.duplicates_found)
 
 
-@app.get("/wealth/{master_person_id}", response_model=WealthProfileResponse, tags=["Wealth"])
+@app.get(
+    "/wealth/{master_person_id}",
+    response_model=WealthProfileResponse,
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def get_wealth(master_person_id: str) -> WealthProfileResponse:
     """Return the aggregated golden wealth profile for a resolved person,
     e.g. `/wealth/MP00001`."""
@@ -158,7 +196,12 @@ def get_wealth(master_person_id: str) -> WealthProfileResponse:
     return WealthProfileResponse(**profile)
 
 
-@app.get("/wealth/{master_person_id}/detail", response_model=WealthProfileDetailResponse, tags=["Wealth"])
+@app.get(
+    "/wealth/{master_person_id}/detail",
+    response_model=WealthProfileDetailResponse,
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def get_wealth_detail(master_person_id: str) -> WealthProfileDetailResponse:
     """Return the full profile dossier for a resolved person: the golden
     wealth profile, every linked subsidiary source record, a relative
@@ -172,7 +215,33 @@ def get_wealth_detail(master_person_id: str) -> WealthProfileDetailResponse:
     return WealthProfileDetailResponse(**profile)
 
 
-@app.get("/search", response_model=SearchResponse, tags=["Wealth"])
+@app.get(
+    "/wealth/{master_person_id}/export/pdf",
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def export_wealth_pdf(master_person_id: str) -> Response:
+    """Download the full profile dossier (same data as `/detail`) as a PDF
+    report."""
+    if not wealth_service.has_wealth_profiles():
+        raise HTTPException(status_code=400, detail="No wealth profiles found. Call POST /run-linkage first.")
+    profile = wealth_service.get_profile_detail(master_person_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No profile found for '{master_person_id}'")
+    pdf_bytes = exports.build_profile_pdf(profile)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{master_person_id}.pdf"'},
+    )
+
+
+@app.get(
+    "/search",
+    response_model=SearchResponse,
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def search(
     q: str = Query(
         "", description="Name to search for, e.g. 'john smith'. Leave empty to browse all profiles alphabetically."
@@ -205,7 +274,12 @@ def search(
     return SearchResponse(query=q, results=results, total=total)
 
 
-@app.get("/dashboard", response_model=DashboardSummaryResponse, tags=["Dashboard"])
+@app.get(
+    "/dashboard",
+    response_model=DashboardSummaryResponse,
+    tags=["Dashboard"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def dashboard() -> DashboardSummaryResponse:
     """High-level summary metrics for the SVW platform: population size,
     linkage quality, and aggregate wealth under management."""
@@ -213,7 +287,12 @@ def dashboard() -> DashboardSummaryResponse:
     return DashboardSummaryResponse(**summary)
 
 
-@app.get("/dashboard/showcase", response_model=WealthProfileDetailResponse, tags=["Dashboard"])
+@app.get(
+    "/dashboard/showcase",
+    response_model=WealthProfileDetailResponse,
+    tags=["Dashboard"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def dashboard_showcase() -> WealthProfileDetailResponse:
     """One representative resolved profile, picked because its linked
     records show clearly different name spellings - feeds the dashboard's
@@ -226,7 +305,12 @@ def dashboard_showcase() -> WealthProfileDetailResponse:
     return WealthProfileDetailResponse(**example)
 
 
-@app.get("/quality", response_model=QualityResponse, tags=["Dashboard"])
+@app.get(
+    "/quality",
+    response_model=QualityResponse,
+    tags=["Dashboard"],
+    dependencies=[Depends(auth.get_current_user)],
+)
 def quality() -> QualityResponse:
     """Linkage-quality diagnostics for the Data Quality page: a match-confidence
     histogram, cluster-size distribution, and a manual-review queue of the
@@ -234,3 +318,45 @@ def quality() -> QualityResponse:
     if not splink_service.has_run_linkage():
         raise HTTPException(status_code=400, detail="No linkage results found. Call POST /run-linkage first.")
     return QualityResponse(**wealth_service.get_quality_metrics())
+
+
+@app.get(
+    "/export/directory.csv",
+    tags=["Exports"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def export_directory_csv(
+    q: str = Query("", description="Same filter as /search?q= - leave empty to export the full directory."),
+) -> Response:
+    """Download every resolved profile matching `q` (or all profiles) as CSV."""
+    if not wealth_service.has_wealth_profiles():
+        raise HTTPException(status_code=400, detail="No wealth profiles found. Call POST /run-linkage first.")
+    csv_text = exports.build_directory_csv(q)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="directory.csv"'},
+    )
+
+
+@app.get(
+    "/export/review-queue.csv",
+    tags=["Exports"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def export_review_queue_csv(
+    limit: int = Query(
+        exports.DEFAULT_REVIEW_QUEUE_EXPORT_LIMIT,
+        description="Max number of lowest-confidence clusters to include, worst first.",
+    ),
+) -> Response:
+    """Download the manual-review backlog (low-confidence multi-record
+    clusters) as CSV - the full backlog, not just the dashboard's top 10."""
+    if not splink_service.has_run_linkage():
+        raise HTTPException(status_code=400, detail="No linkage results found. Call POST /run-linkage first.")
+    csv_text = exports.build_review_queue_csv(limit)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="review-queue.csv"'},
+    )

@@ -38,14 +38,21 @@ def main() -> None:
 
     conn = get_connection()
     try:
+        # Note: a person can now hold more than one account of the same
+        # product type (each at a possibly different subsidiary), so the
+        # "has every product type" check below uses EXISTS rather than an
+        # INNER JOIN on product_records - joining directly would create a
+        # Cartesian product and inflate COUNT(*) with nothing to do with
+        # the number of subsidiary payroll records, which is what this
+        # query actually needs to count.
         demo_person_index = conn.execute(
             """
             SELECT s.person_index
             FROM source_records s
-            JOIN current_accounts USING (person_index)
-            JOIN savings_accounts USING (person_index)
-            JOIN investments USING (person_index)
-            JOIN mortgages USING (person_index)
+            WHERE EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'current_account')
+              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'savings_account')
+              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'investment')
+              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'mortgage')
             GROUP BY s.person_index
             HAVING COUNT(*) >= 3 AND COUNT(DISTINCT LOWER(s.first_name)) >= 2
             ORDER BY s.person_index
@@ -54,24 +61,44 @@ def main() -> None:
         ).fetchone()[0]
 
         _print_header("STEP 2: BEFORE Splink - records look like different people")
-        before_rows = conn.execute(
+        before_payroll_rows = conn.execute(
             """
-            SELECT subsidiary, employee_id, first_name, last_name, email, phone, address, postcode
+            SELECT subsidiary, employee_id, first_name, last_name, email, phone, address, postcode, annual_salary
             FROM source_records
             WHERE person_index = ?
             ORDER BY subsidiary
             """,
             [demo_person_index],
         ).fetchall()
-        columns = [c[0] for c in conn.description]
-        for row in before_rows:
-            rec = dict(zip(columns, row))
+        payroll_columns = [c[0] for c in conn.description]
+        for row in before_payroll_rows:
+            rec = dict(zip(payroll_columns, row))
             print(
-                f"- [{rec['subsidiary']}] {rec['first_name']} {rec['last_name']}  "
+                f"- [{rec['subsidiary']}] {rec['first_name']} {rec['last_name']}  payroll, salary=£{rec['annual_salary']:,.0f}  "
                 f"email={rec['email']}  phone={rec['phone']}  "
                 f"address={rec['address']}, {rec['postcode']}"
             )
-        print(f"\n=> Without entity resolution, these look like {len(before_rows)} different people.")
+
+        before_product_rows = conn.execute(
+            """
+            SELECT subsidiary, record_type, account_id, first_name, last_name, email, phone, address, postcode, balance
+            FROM product_records
+            WHERE person_index = ?
+            ORDER BY subsidiary
+            """,
+            [demo_person_index],
+        ).fetchall()
+        product_columns = [c[0] for c in conn.description]
+        for row in before_product_rows:
+            rec = dict(zip(product_columns, row))
+            print(
+                f"- [{rec['subsidiary']}] {rec['first_name']} {rec['last_name']}  {rec['record_type']}, balance=£{rec['balance']:,.0f}  "
+                f"email={rec['email']}  phone={rec['phone']}  "
+                f"address={rec['address']}, {rec['postcode']}"
+            )
+
+        total_before = len(before_payroll_rows) + len(before_product_rows)
+        print(f"\n=> Without entity resolution, these look like {total_before} different people.")
     finally:
         conn.close()
 
@@ -85,12 +112,18 @@ def main() -> None:
     conn = get_connection()
     try:
         master_person_id = conn.execute(
-            "SELECT master_person_id FROM person_cluster_map WHERE person_index = ?",
+            """
+            SELECT c.master_person_id
+            FROM source_records s
+            JOIN clusters c USING (source_record_id)
+            WHERE s.person_index = ?
+            LIMIT 1
+            """,
             [demo_person_index],
         ).fetchone()[0]
 
         _print_header(f"STEP 4: AFTER Splink - Master Person ID: {master_person_id}")
-        after_rows = conn.execute(
+        after_payroll_rows = conn.execute(
             """
             SELECT s.subsidiary, c.match_probability
             FROM clusters c
@@ -100,10 +133,25 @@ def main() -> None:
             """,
             [master_person_id],
         ).fetchall()
-        for subsidiary, prob in after_rows:
-            print(f"- Linked: {subsidiary}  (confidence: {prob:.1%})")
-        avg_conf = sum(p for _, p in after_rows) / len(after_rows)
-        print(f"\n=> Resolved {len(after_rows)} records into ONE person. Overall confidence: {avg_conf:.1%}")
+        for subsidiary, prob in after_payroll_rows:
+            print(f"- Linked: {subsidiary} (payroll)  (confidence: {prob:.1%})")
+
+        after_product_rows = conn.execute(
+            """
+            SELECT p.subsidiary, p.record_type, c.match_probability
+            FROM clusters c
+            JOIN product_records p USING (source_record_id)
+            WHERE c.master_person_id = ?
+            ORDER BY p.subsidiary
+            """,
+            [master_person_id],
+        ).fetchall()
+        for subsidiary, record_type, prob in after_product_rows:
+            print(f"- Linked: {subsidiary} ({record_type})  (confidence: {prob:.1%})")
+
+        all_confidences = [p for _, p in after_payroll_rows] + [p for _, _, p in after_product_rows]
+        avg_conf = sum(all_confidences) / len(all_confidences)
+        print(f"\n=> Resolved {len(all_confidences)} records into ONE person. Overall confidence: {avg_conf:.1%}")
 
         _print_header("STEP 5: Single View of Wealth")
         profile = wealth_service.get_wealth_profile(master_person_id)
@@ -114,6 +162,15 @@ def main() -> None:
         print(f"Investments:   £{profile['investments']:,.0f}")
         print(f"Mortgage:      £{profile['mortgage']:,.0f}")
         print(f"Net Wealth:    £{profile['net_wealth']:,.0f}")
+
+        holdings = wealth_service.get_profile_detail(master_person_id)["product_holdings"]
+        n_subsidiaries = len({h["subsidiary"] for h in holdings})
+        print(f"\n{len(holdings)} banking-product account(s) across {n_subsidiaries} subsidiary(ies):")
+        for h in holdings:
+            print(
+                f"- [{h['subsidiary']}] {h['product_type']}: £{h['balance']:,.0f}  "
+                f"(confidence: {h['match_probability']:.1%})"
+            )
     finally:
         conn.close()
 

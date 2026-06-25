@@ -21,7 +21,9 @@ class RunLinkageResponse(BaseModel):
 
     clusters: int = Field(..., description="Number of resolved master_person_id clusters.")
     duplicates_found: int = Field(
-        ..., description="source records identified as duplicates of another record (records - clusters)."
+        ...,
+        description="Records (payroll + banking-product) identified as duplicates of another "
+        "record (records - clusters).",
     )
 
 
@@ -66,7 +68,9 @@ class DashboardSummaryResponse(BaseModel):
     total_assets: float = Field(..., description="Sum of cash + savings + investments across all wealth profiles.")
     # Additional breakdown fields used by the dashboard UI; additive on top of
     # the fields above, which are the literal contract from the brief.
-    duplicates_found: int = Field(..., description="source_records - clusters.")
+    duplicates_found: int = Field(
+        ..., description="Total linked records (payroll + banking-product) minus resolved clusters."
+    )
     total_cash: float = Field(..., description="Sum of current-account balances across all wealth profiles.")
     total_savings: float = Field(..., description="Sum of savings balances across all wealth profiles.")
     total_investments: float = Field(..., description="Sum of investment balances across all wealth profiles.")
@@ -74,6 +78,11 @@ class DashboardSummaryResponse(BaseModel):
     total_net_wealth: float = Field(..., description="Sum of net_wealth across all wealth profiles.")
     subsidiary_record_counts: dict[str, int] = Field(
         ..., description="Number of source records contributed by each subsidiary."
+    )
+    product_subsidiary_counts: dict[str, int] = Field(
+        ...,
+        description="Number of banking-product accounts (current/savings/investment/mortgage, "
+        "combined) held at each subsidiary.",
     )
 
 
@@ -95,6 +104,33 @@ class LinkedRecord(BaseModel):
     bonus: float
     currency: str
     match_probability: float = Field(..., description="This record's own per-record linkage confidence.")
+
+
+class ProductHolding(BaseModel):
+    """One banking-product account held by a resolved profile, tagged with
+    the subsidiary it sits at. Like a payroll source record, this is a
+    genuinely Splink-resolved cluster member - match_probability is this
+    holding's own per-record linkage confidence, not a trusted ground-truth
+    attachment. A person may hold several of these per product type,
+    spread across different subsidiaries. Carries the same noisy identity
+    fields a payroll LinkedRecord does, since it was captured (and noised)
+    the same way by that subsidiary's own system."""
+
+    product_type: str = Field(
+        ..., description="One of 'current_account', 'savings_account', 'investment', 'mortgage'."
+    )
+    account_id: str
+    subsidiary: str
+    balance: float
+    match_probability: float = Field(..., description="This holding's own per-record linkage confidence.")
+    first_name: str
+    last_name: str
+    date_of_birth: str
+    email: str | None
+    phone: str | None
+    address: str | None
+    city: str | None
+    postcode: str | None
 
 
 class FieldAgreement(BaseModel):
@@ -120,6 +156,9 @@ class WealthProfileDetailResponse(WealthProfileResponse):
     primary_postcode: str | None
     linked_records: list[LinkedRecord]
     field_agreement: list[FieldAgreement]
+    product_holdings: list[ProductHolding] = Field(
+        ..., description="Every banking-product account held by this profile, tagged with its subsidiary."
+    )
 
 
 class QualityHistogramBucket(BaseModel):
@@ -151,3 +190,18 @@ class HealthResponse(BaseModel):
     status: str
     data_generated: bool
     linkage_run: bool
+
+
+class TokenResponse(BaseModel):
+    """Response for POST /auth/login."""
+
+    access_token: str
+    token_type: str = "bearer"
+    role: str = Field(..., description="The authenticated user's role, e.g. 'admin' or 'analyst'.")
+
+
+class UserResponse(BaseModel):
+    """Response for GET /auth/me."""
+
+    username: str
+    role: str
