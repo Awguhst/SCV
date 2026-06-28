@@ -6,7 +6,9 @@ same people (name variants, address abbreviations, email-format
 differences, missing fields) - both in their payroll feeds and in their
 banking-product holdings (current accounts, savings, investments,
 mortgages), which carry the same kind of noisy identity capture rather
-than a clean, ground-truth attachment.
+than a clean, ground-truth attachment. Every kind of record - payroll and
+all four banking-product types - is persisted into one unified `records`
+table, distinguished by its `record_type` column.
 
 Nothing here is real data - it is all Faker-generated - but the shapes
 and the data-quality issues mirror what a real banking group sees when
@@ -41,7 +43,7 @@ SUBSIDIARY_CODES = {s.value: s.name for s in Subsidiary}
 # Distribution of "how many subsidiaries recorded this person" chosen so the
 # totals are *exact*, not just approximately on target:
 #   2,000 people x 1 record + 3,000 x 2 + 3,000 x 3 + 2,000 x 4
-#   = 10,000 people, 25,000 records
+#   = 10,000 people, 25,000 payroll records
 RECORD_COUNT_DISTRIBUTION = {1: 2000, 2: 3000, 3: 3000, 4: 2000}
 N_RECORDS = sum(count * n for n, count in RECORD_COUNT_DISTRIBUTION.items())
 
@@ -62,6 +64,77 @@ PRODUCT_BUNDLE_DISTRIBUTION = {
 # different subsidiary, which is exactly the cross-subsidiary diversity a
 # real banking group's customer base shows.
 ACCOUNT_COUNT_WEIGHTS = {1: 0.75, 2: 0.18, 3: 0.05, 4: 0.02}
+
+# ---------------------------------------------------------------------------
+# Demographic & financial distribution constants
+# ---------------------------------------------------------------------------
+MINIMUM_AGE = 21
+MAXIMUM_AGE = 66
+
+# Salary: a shifted lognormal (see `_lognormal` below) plus a small
+# per-subsidiary variance applied independently to each payroll record of
+# the same person (different subsidiaries record slightly different figures
+# for the same underlying job).
+SALARY_FLOOR = 30_000.0
+SALARY_MEDIAN_ABOVE_FLOOR = 12_000.0
+SALARY_SIGMA = 0.8
+SALARY_HIGH = 250_000.0
+SALARY_SUBSIDIARY_VARIANCE_LOW = 0.95
+SALARY_SUBSIDIARY_VARIANCE_HIGH = 1.05
+
+# Bonus: Beta(alpha, beta) skews toward modest payouts (mean ~14% of salary
+# at the defaults below), capped at BONUS_PCT_CAP of annual salary.
+BONUS_BETA_ALPHA = 2
+BONUS_BETA_BETA = 5
+BONUS_PCT_CAP = 0.5
+
+# Per-product-type balance distributions (each a shifted lognormal - see
+# `_lognormal` below).
+CURRENT_ACCOUNT_BALANCE_FLOOR = 50.0
+CURRENT_ACCOUNT_BALANCE_MEDIAN_ABOVE_FLOOR = 2_000.0
+CURRENT_ACCOUNT_BALANCE_SIGMA = 1.1
+CURRENT_ACCOUNT_BALANCE_HIGH = 50_000.0
+
+SAVINGS_BALANCE_FLOOR = 200.0
+SAVINGS_BALANCE_MEDIAN_ABOVE_FLOOR = 10_000.0
+SAVINGS_BALANCE_SIGMA = 1.1
+SAVINGS_BALANCE_HIGH = 200_000.0
+
+INVESTMENT_BALANCE_FLOOR = 500.0
+INVESTMENT_BALANCE_MEDIAN_ABOVE_FLOOR = 30_000.0
+INVESTMENT_BALANCE_SIGMA = 1.2
+INVESTMENT_BALANCE_HIGH = 500_000.0
+
+# Mortgage balance: salary x a triangular multiplier (peaking at the
+# affordability-typical mode), clamped to a realistic UK range.
+MORTGAGE_MULTIPLIER_LOW = 2.0
+MORTGAGE_MULTIPLIER_HIGH = 6.0
+MORTGAGE_MULTIPLIER_MODE = 3.5
+MORTGAGE_BALANCE_FLOOR = 50_000.0
+MORTGAGE_BALANCE_CAP = 600_000.0
+
+# Identity-noise thresholds shared by every record-emitting call site
+# (payroll and all four product types) via `_noisy_identity_capture`. Each
+# constant is named for, and gates, the branch it literally selects (e.g.
+# `*_UNCHANGED_PROB`/`*_REUSE_PROB` gate the "leave it as-is" branch) so a
+# future edit can't accidentally invert its sense. The first-name/last-name
+# thresholds are *cumulative* - each `_vary_*` function draws one random
+# number and compares it against these in sequence - not independent
+# per-branch probabilities.
+FIRST_NAME_UNCHANGED_PROB = 0.55
+FIRST_NAME_NICKNAME_PROB = 0.80
+FIRST_NAME_INITIAL_PROB = 0.92
+LAST_NAME_UNCHANGED_PROB = 0.85
+LAST_NAME_CASE_VARIANT_PROB = 0.93
+ADDRESS_ABBREVIATION_PROB = 0.5  # per street-type token
+POSTCODE_STRIP_SPACE_PROB = 0.3
+EMAIL_REUSE_PROB = 0.5  # probability of reusing the canonical email verbatim
+EMAIL_NUMERIC_SUFFIX_PROB = 0.2
+PHONE_REUSE_PROB = 0.5  # probability of reusing the canonical phone verbatim
+DOB_UNCHANGED_PROB = 0.95
+EMAIL_NULL_PROB = 0.12
+PHONE_NULL_PROB = 0.12
+ADDRESS_NULL_PROB = 0.10
 
 DB_PATH = Path(os.environ.get("SVW_DB_PATH", Path(__file__).resolve().parent.parent / "data" / "svow.duckdb"))
 
@@ -128,6 +201,31 @@ ADDRESS_ABBREVIATIONS = {
     "Park": "Pk",
 }
 
+# Column order for the unified `records` table - payroll-only fields
+# (`employee_id`, `annual_salary`, `bonus`) and product-only fields
+# (`account_id`, `balance`) are nullable, populated only for the relevant
+# `record_type`.
+RECORD_COLUMNS = [
+    "source_record_id",
+    "person_index",
+    "subsidiary",
+    "record_type",
+    "employee_id",
+    "account_id",
+    "first_name",
+    "last_name",
+    "date_of_birth",
+    "email",
+    "phone",
+    "address",
+    "city",
+    "postcode",
+    "annual_salary",
+    "bonus",
+    "balance",
+    "currency",
+]
+
 
 def get_connection() -> duckdb.DuckDBPyConnection:
     """Open a fresh connection to the on-disk DuckDB store.
@@ -145,11 +243,11 @@ def _vary_first_name(first_name: str, rng: random.Random) -> str:
     """Return a noisy variant of a first name: full / nickname / initial / case."""
     key = first_name.lower()
     roll = rng.random()
-    if roll < 0.55:
+    if roll < FIRST_NAME_UNCHANGED_PROB:
         return first_name
-    if key in NICKNAMES and roll < 0.80:
+    if key in NICKNAMES and roll < FIRST_NAME_NICKNAME_PROB:
         return rng.choice(NICKNAMES[key])
-    if roll < 0.92:
+    if roll < FIRST_NAME_INITIAL_PROB:
         return first_name[0]
     return first_name.upper() if rng.random() < 0.5 else first_name.lower()
 
@@ -157,9 +255,9 @@ def _vary_first_name(first_name: str, rng: random.Random) -> str:
 def _vary_last_name(last_name: str, rng: random.Random) -> str:
     """Return a noisy variant of a surname: mostly unchanged, occasional case/typo."""
     roll = rng.random()
-    if roll < 0.85:
+    if roll < LAST_NAME_UNCHANGED_PROB:
         return last_name
-    if roll < 0.93:
+    if roll < LAST_NAME_CASE_VARIANT_PROB:
         return last_name.upper() if rng.random() < 0.5 else last_name.lower()
     # Single-character transcription typo (swap two adjacent letters).
     if len(last_name) > 3:
@@ -171,17 +269,17 @@ def _vary_last_name(last_name: str, rng: random.Random) -> str:
 
 
 def _vary_address(address: str, rng: random.Random) -> str:
-    """Abbreviate street-type tokens with ~50% probability per occurrence."""
+    """Abbreviate street-type tokens with ~ADDRESS_ABBREVIATION_PROB probability per occurrence."""
     out = address
     for full, abbr in ADDRESS_ABBREVIATIONS.items():
-        if full in out and rng.random() < 0.5:
+        if full in out and rng.random() < ADDRESS_ABBREVIATION_PROB:
             out = out.replace(full, abbr)
     return out
 
 
 def _vary_postcode(postcode: str, rng: random.Random) -> str:
     """UK postcodes are sometimes typed without the internal space."""
-    if rng.random() < 0.3:
+    if rng.random() < POSTCODE_STRIP_SPACE_PROB:
         return postcode.replace(" ", "")
     return postcode
 
@@ -198,7 +296,7 @@ def _make_email(first_name: str, last_name: str, rng: random.Random) -> str:
         local = f"{f[0]}{l}"
     else:
         local = f"{f}_{l}"
-    if rng.random() < 0.2:
+    if rng.random() < EMAIL_NUMERIC_SUFFIX_PROB:
         local += str(rng.randint(1, 99))
     return f"{local}@{domain}"
 
@@ -207,7 +305,7 @@ def _vary_email(canonical_email: str, first_name: str, last_name: str, rng: rand
     """Either reuse the canonical address verbatim, or regenerate a same-person
     variant under a different formatting convention (simulating a different
     subsidiary's email-issuing system)."""
-    if rng.random() < 0.5:
+    if rng.random() < EMAIL_REUSE_PROB:
         return canonical_email
     return _make_email(first_name, last_name, rng)
 
@@ -215,14 +313,14 @@ def _vary_email(canonical_email: str, first_name: str, last_name: str, rng: rand
 def _vary_phone(canonical_phone: str, rng: random.Random) -> str:
     """Either reuse the canonical number, or strip formatting characters
     (spaces/brackets/dashes) to simulate a different system's storage format."""
-    if rng.random() < 0.5:
+    if rng.random() < PHONE_REUSE_PROB:
         return canonical_phone
     return "".join(ch for ch in canonical_phone if ch not in " ()-")
 
 
 def _vary_dob(iso_date: str, rng: random.Random) -> str:
     """Introduce an occasional realistic data-entry error: day/month transposed."""
-    if rng.random() < 0.95:
+    if rng.random() < DOB_UNCHANGED_PROB:
         return iso_date
     year, month, day = iso_date.split("-")
     if day <= "12":
@@ -248,9 +346,9 @@ def _noisy_identity_capture(person: dict, rng: random.Random) -> dict:
         "first_name": first_name_noisy,
         "last_name": last_name_noisy,
         "date_of_birth": dob_noisy,
-        "email": None if rng.random() < 0.12 else email_noisy,
-        "phone": None if rng.random() < 0.12 else phone_noisy,
-        "address": None if rng.random() < 0.10 else address_noisy,
+        "email": None if rng.random() < EMAIL_NULL_PROB else email_noisy,
+        "phone": None if rng.random() < PHONE_NULL_PROB else phone_noisy,
+        "address": None if rng.random() < ADDRESS_NULL_PROB else address_noisy,
         "city": person["city"],
         "postcode": postcode_noisy,
     }
@@ -300,7 +398,7 @@ class GenerationResult:
     people: int
     records: int
     persons_df: pd.DataFrame = field(repr=False)
-    source_records_df: pd.DataFrame = field(repr=False)
+    records_df: pd.DataFrame = field(repr=False)
 
 
 def generate_all(seed: int = SEED) -> GenerationResult:
@@ -319,7 +417,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
     for idx in range(N_PEOPLE):
         first_name = faker.first_name()
         last_name = faker.last_name()
-        dob = faker.date_of_birth(minimum_age=21, maximum_age=66)
+        dob = faker.date_of_birth(minimum_age=MINIMUM_AGE, maximum_age=MAXIMUM_AGE)
         address = faker.street_address().replace("\n", ", ")
         city = faker.city()
         postcode = faker.postcode()
@@ -340,7 +438,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
         )
     persons_df = pd.DataFrame(persons)
 
-    # --- 2. Noisy multi-subsidiary source records -------------------------
+    # --- 2. Noisy multi-subsidiary payroll records -------------------------
     record_counts = _shuffled_record_counts(rng)
     assert len(record_counts) == N_PEOPLE
 
@@ -349,7 +447,9 @@ def generate_all(seed: int = SEED) -> GenerationResult:
     for idx, person in enumerate(persons):
         n_records = record_counts[idx]
         chosen_subsidiaries = rng.sample(SUBSIDIARIES, n_records)
-        base_salary = _lognormal(rng, floor=30_000, median_above_floor=12_000, sigma=0.8, high=250_000)
+        base_salary = _lognormal(
+            rng, floor=SALARY_FLOOR, median_above_floor=SALARY_MEDIAN_ABOVE_FLOOR, sigma=SALARY_SIGMA, high=SALARY_HIGH
+        )
 
         for subsidiary in chosen_subsidiaries:
             record_seq += 1
@@ -358,17 +458,21 @@ def generate_all(seed: int = SEED) -> GenerationResult:
 
             identity = _noisy_identity_capture(person, rng)
 
-            salary = max(30_000.0, min(250_000.0, base_salary * rng.uniform(0.95, 1.05)))
-            # Beta(2, 5) skews bonus toward modest payouts (mean ~14% of
-            # salary) with a shrinking tail up to the 50% cap, rather than
-            # every employee being equally likely to land anywhere 0-50%.
-            bonus_pct = rng.betavariate(2, 5) * 0.5
+            salary = max(
+                SALARY_FLOOR,
+                min(SALARY_HIGH, base_salary * rng.uniform(SALARY_SUBSIDIARY_VARIANCE_LOW, SALARY_SUBSIDIARY_VARIANCE_HIGH)),
+            )
+            # Beta(alpha, beta) skews bonus toward modest payouts with a
+            # shrinking tail up to the cap, rather than every employee being
+            # equally likely to land anywhere in the range.
+            bonus_pct = rng.betavariate(BONUS_BETA_ALPHA, BONUS_BETA_BETA) * BONUS_PCT_CAP
 
             source_records.append(
                 {
                     "source_record_id": source_record_id,
                     "person_index": idx,
                     "subsidiary": subsidiary,
+                    "record_type": RecordType.PAYROLL.value,
                     "employee_id": employee_id,
                     **identity,
                     "annual_salary": round(salary, 2),
@@ -389,16 +493,18 @@ def generate_all(seed: int = SEED) -> GenerationResult:
     salary_by_person = source_records_df.groupby("person_index")["annual_salary"].mean()
 
     product_records: list[dict] = []
-    product_seqs = {"PR": 0, "CA": 0, "SA": 0, "IV": 0, "MG": 0}
+    product_seqs = {"CA": 0, "SA": 0, "IV": 0, "MG": 0}
 
     def _next_id(prefix: str) -> str:
         product_seqs[prefix] += 1
         return f"{prefix}{product_seqs[prefix]:06d}"
 
     def _emit_product(idx: int, record_type: RecordType, account_prefix: str, subsidiary: str, balance: float) -> None:
+        nonlocal record_seq
+        record_seq += 1
         product_records.append(
             {
-                "source_record_id": _next_id("PR"),
+                "source_record_id": f"REC{record_seq:06d}",
                 "person_index": idx,
                 "subsidiary": subsidiary,
                 "record_type": record_type.value,
@@ -411,7 +517,11 @@ def generate_all(seed: int = SEED) -> GenerationResult:
 
     for idx, bundle in enumerate(bundles):
         mean_salary = salary_by_person.get(idx)
-        person_salary = float(mean_salary) if mean_salary is not None else _lognormal(rng, 30_000, 12_000, 0.8, 250_000)
+        person_salary = (
+            float(mean_salary)
+            if mean_salary is not None
+            else _lognormal(rng, SALARY_FLOOR, SALARY_MEDIAN_ABOVE_FLOOR, SALARY_SIGMA, SALARY_HIGH)
+        )
 
         has_deposits = bundle in (ProductBundle.PAYROLL_DEPOSITS, ProductBundle.ALL_PRODUCTS)
         has_investments = bundle in (ProductBundle.PAYROLL_INVESTMENTS, ProductBundle.ALL_PRODUCTS)
@@ -426,12 +536,44 @@ def generate_all(seed: int = SEED) -> GenerationResult:
             # independent noisy identity capture (a different subsidiary
             # system recording the same person imperfectly).
             for subsidiary in _account_subsidiaries(rng):
-                _emit_product(idx, RecordType.CURRENT_ACCOUNT, "CA", subsidiary, _lognormal(rng, 50, 2_000, 1.1, 50_000))
+                _emit_product(
+                    idx,
+                    RecordType.CURRENT_ACCOUNT,
+                    "CA",
+                    subsidiary,
+                    _lognormal(
+                        rng,
+                        CURRENT_ACCOUNT_BALANCE_FLOOR,
+                        CURRENT_ACCOUNT_BALANCE_MEDIAN_ABOVE_FLOOR,
+                        CURRENT_ACCOUNT_BALANCE_SIGMA,
+                        CURRENT_ACCOUNT_BALANCE_HIGH,
+                    ),
+                )
             for subsidiary in _account_subsidiaries(rng):
-                _emit_product(idx, RecordType.SAVINGS_ACCOUNT, "SA", subsidiary, _lognormal(rng, 200, 10_000, 1.1, 200_000))
+                _emit_product(
+                    idx,
+                    RecordType.SAVINGS_ACCOUNT,
+                    "SA",
+                    subsidiary,
+                    _lognormal(
+                        rng, SAVINGS_BALANCE_FLOOR, SAVINGS_BALANCE_MEDIAN_ABOVE_FLOOR, SAVINGS_BALANCE_SIGMA, SAVINGS_BALANCE_HIGH
+                    ),
+                )
         if has_investments:
             for subsidiary in _account_subsidiaries(rng):
-                _emit_product(idx, RecordType.INVESTMENT, "IV", subsidiary, _lognormal(rng, 500, 30_000, 1.2, 500_000))
+                _emit_product(
+                    idx,
+                    RecordType.INVESTMENT,
+                    "IV",
+                    subsidiary,
+                    _lognormal(
+                        rng,
+                        INVESTMENT_BALANCE_FLOOR,
+                        INVESTMENT_BALANCE_MEDIAN_ABOVE_FLOOR,
+                        INVESTMENT_BALANCE_SIGMA,
+                        INVESTMENT_BALANCE_HIGH,
+                    ),
+                )
         if has_mortgage:
             # Mortgages scale with salary (affordability), within realistic UK
             # bounds. A triangular distribution peaking at ~3.5x income
@@ -441,21 +583,30 @@ def generate_all(seed: int = SEED) -> GenerationResult:
             # multiplier per mortgage rather than splitting one affordability
             # budget across them - a known, accepted simplification.
             for subsidiary in _account_subsidiaries(rng):
-                mortgage_multiplier = rng.triangular(2.0, 6.0, 3.5)
-                mortgage_balance = max(50_000.0, min(600_000.0, person_salary * mortgage_multiplier))
+                mortgage_multiplier = rng.triangular(MORTGAGE_MULTIPLIER_LOW, MORTGAGE_MULTIPLIER_HIGH, MORTGAGE_MULTIPLIER_MODE)
+                mortgage_balance = max(MORTGAGE_BALANCE_FLOOR, min(MORTGAGE_BALANCE_CAP, person_salary * mortgage_multiplier))
                 _emit_product(idx, RecordType.MORTGAGE, "MG", subsidiary, mortgage_balance)
 
     product_records_df = pd.DataFrame(product_records)
 
-    # --- 4. Persist everything to DuckDB -----------------------------------
+    # --- 4. Unify and persist everything to DuckDB --------------------------
+    all_records_df = pd.concat([source_records_df, product_records_df], ignore_index=True)[RECORD_COLUMNS]
+
     conn = get_connection()
     try:
         _persist(conn, "persons", persons_df)
-        _persist(conn, "source_records", source_records_df)
-        _persist(conn, "product_records", product_records_df)
-        # Drop the legacy per-product-type tables this schema replaces, so a
-        # pre-existing data/svow.duckdb doesn't accumulate orphaned tables.
-        for legacy_table in ("current_accounts", "savings_accounts", "investments", "mortgages"):
+        _persist(conn, "records", all_records_df)
+        # Drop the legacy tables this schema replaces (the old two-table
+        # split, plus earlier per-product-type tables), so a pre-existing
+        # data/svow.duckdb doesn't accumulate orphaned tables.
+        for legacy_table in (
+            "source_records",
+            "product_records",
+            "current_accounts",
+            "savings_accounts",
+            "investments",
+            "mortgages",
+        ):
             conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
         # Downstream linkage/wealth tables are now stale - drop them so the
         # API can detect "linkage hasn't been (re)run since the last
@@ -469,7 +620,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
         people=len(persons_df),
         records=len(source_records_df),
         persons_df=persons_df,
-        source_records_df=source_records_df,
+        records_df=all_records_df,
     )
 
 
@@ -484,6 +635,6 @@ def has_generated_data() -> bool:
     conn = get_connection()
     try:
         tables = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
-        return "source_records" in tables
+        return "records" in tables
     finally:
         conn.close()

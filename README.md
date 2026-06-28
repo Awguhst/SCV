@@ -177,8 +177,9 @@ Every random choice in `data_generator.py` and `splink_service.py` is seeded
 (`SEED = 42`), so `POST /generate-data` followed by `POST /run-linkage`
 produces identical results on every run and every machine.
 
-Splink now resolves payroll *and* banking-product records together in one pool
-(rather than trusting banking products via a clean index), so the linkage pool is
+Splink now resolves payroll *and* banking-product records together in one pool -
+every row of the unified `records` table, distinguished by `record_type` (rather
+than trusting banking products via a clean index) - so the linkage pool is
 meaningfully larger than payroll alone. On this seeded dataset the pipeline
 currently resolves:
 

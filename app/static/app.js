@@ -266,7 +266,6 @@ async function loadDashboard() {
   grid.innerHTML = [
     kpiCard("Total Net Wealth", GBP.format(d.total_net_wealth), "account_balance", "Cash + savings + investments − mortgage"),
     kpiCard("Total Assets", GBP.format(d.total_assets), "savings", "Cash + savings + investments"),
-    kpiCard("Unique People", INT.format(d.unique_people), "groups", "Ground-truth population generated"),
     kpiCard("Source Records", INT.format(d.source_records), "database", "Noisy records across 5 subsidiaries"),
     kpiCard("Clusters Resolved", INT.format(d.clusters), "bubble_chart", "master_person_id groups"),
     kpiCard("Duplicates Found", INT.format(d.duplicates_found), "auto_fix_high", "Records merged into another cluster"),
@@ -334,14 +333,13 @@ async function loadDashboard() {
   loadShowcase();
 }
 
-// Normalizes a showcase response's linked_records (payroll) and
-// product_holdings into one "before Splink" evidence list - both kinds are
-// equally noisy, equally first-class records now, so the before/after story
-// should show both, not just payroll.
+// Normalizes a showcase response's unified `records` list (payroll and
+// banking-product rows alike, distinguished by record_type) into one
+// "before Splink" evidence list - both kinds are equally noisy, equally
+// first-class records now, so the before/after story should show both, not
+// just payroll.
 function toShowcaseRecords(s) {
-  const fromPayroll = s.linked_records.map((r) => ({ ...r, type: "payroll", value: r.annual_salary }));
-  const fromProducts = s.product_holdings.map((h) => ({ ...h, type: h.product_type, value: h.balance }));
-  return [...fromPayroll, ...fromProducts];
+  return s.records.map((r) => ({ ...r, type: r.record_type.toLowerCase(), value: r.annual_salary ?? r.balance }));
 }
 
 function showcasePersonCard(r) {
@@ -409,10 +407,13 @@ async function loadShowcase() {
           <div><p class="text-[11px] text-on-surface-variant">Net Wealth</p><p class="font-semibold">${GBP.format(s.net_wealth)}</p></div>
         </div>
         ${
-          s.product_holdings.length
-            ? `<p class="text-[11px] text-on-surface-variant">Banking products</p>
-               <p class="text-sm mb-4">${s.product_holdings.map((h) => `${FINANCIAL_TYPE_LABELS[h.product_type]} (${h.subsidiary})`).join(", ")}</p>`
-            : ""
+          (() => {
+            const productRecords = showcaseRecords.filter((r) => r.type !== "payroll");
+            return productRecords.length
+              ? `<p class="text-[11px] text-on-surface-variant">Banking products</p>
+                 <p class="text-sm mb-4">${productRecords.map((r) => `${FINANCIAL_TYPE_LABELS[r.type]} (${r.subsidiary})`).join(", ")}</p>`
+              : "";
+          })()
         }
         <button id="btn-showcase-profile" class="mt-auto text-xs font-bold text-primary hover:underline flex items-center gap-1 self-start">
           View full profile <span class="material-symbols-outlined text-sm">arrow_forward</span>
@@ -548,22 +549,6 @@ function metricCard(label, value, icon, pct, isLiability = false) {
     </div>`;
 }
 
-function linkedRecordRow(r) {
-  return `
-    <div class="p-5 flex items-center justify-between gap-4">
-      <div class="flex items-center gap-4 min-w-0">
-        <div class="w-10 h-10 rounded bg-surface-container-high flex items-center justify-center shrink-0">
-          <span class="material-symbols-outlined text-primary">business</span>
-        </div>
-        <div class="min-w-0">
-          <p class="font-semibold text-sm">${r.subsidiary} <span class="text-on-surface-variant font-normal">&middot; ${r.employee_id}</span></p>
-          <p class="text-on-surface-variant text-xs truncate">"${r.first_name} ${r.last_name}" &middot; ${r.email ?? "no email on file"} &middot; ${GBP.format(r.annual_salary)}</p>
-        </div>
-      </div>
-      ${confidenceBadge(r.match_probability)}
-    </div>`;
-}
-
 const PRODUCT_TYPE_ICONS = {
   current_account: "account_balance_wallet",
   savings_account: "savings",
@@ -579,45 +564,35 @@ const PRODUCT_TYPE_LABELS = {
 const FINANCIAL_TYPE_ICONS = { payroll: "payments", ...PRODUCT_TYPE_ICONS };
 const FINANCIAL_TYPE_LABELS = { payroll: "Salary", ...PRODUCT_TYPE_LABELS };
 
-// Normalizes a profile's linked_records (salary) and product_holdings into
-// one list of financial records - salary and banking products are equally
-// first-class, Splink-resolved cluster members now, so they belong in one
-// itemized view rather than a separate chart and a separate list.
-function toFinancialHoldings(p) {
-  const fromPayroll = p.linked_records.map((r) => ({
-    type: "payroll",
-    subsidiary: r.subsidiary,
-    detail: r.employee_id,
-    value: r.annual_salary,
-    match_probability: r.match_probability,
-  }));
-  const fromProducts = p.product_holdings.map((h) => ({
-    type: h.product_type,
-    subsidiary: h.subsidiary,
-    detail: h.account_id,
-    value: h.balance,
-    match_probability: h.match_probability,
-  }));
-  return [...fromPayroll, ...fromProducts].sort(
-    (a, b) => a.subsidiary.localeCompare(b.subsidiary) || a.type.localeCompare(b.type)
+// Orders a profile's unified `records` list (payroll and banking-product
+// rows alike, distinguished by record_type) for display - by subsidiary,
+// then by record type - so every linked record appears exactly once in one
+// itemized view, rather than payroll showing up again as a duplicate
+// "Salary" line in a separate section.
+function toLinkedRecords(p) {
+  return [...p.records].sort(
+    (a, b) => a.subsidiary.localeCompare(b.subsidiary) || a.record_type.localeCompare(b.record_type)
   );
 }
 
-function financialHoldingRow(h) {
+function recordRow(r) {
+  const type = r.record_type.toLowerCase();
+  const value = r.annual_salary ?? r.balance;
+  const detail = r.employee_id ?? r.account_id;
   return `
     <div class="p-5 flex items-center justify-between gap-4">
       <div class="flex items-center gap-4 min-w-0">
         <div class="w-10 h-10 rounded bg-surface-container-high flex items-center justify-center shrink-0">
-          <span class="material-symbols-outlined text-primary">${FINANCIAL_TYPE_ICONS[h.type] ?? "account_balance"}</span>
+          <span class="material-symbols-outlined text-primary">${FINANCIAL_TYPE_ICONS[type] ?? "account_balance"}</span>
         </div>
         <div class="min-w-0">
-          <p class="font-semibold text-sm">${FINANCIAL_TYPE_LABELS[h.type] ?? h.type} <span class="text-on-surface-variant font-normal">&middot; ${h.subsidiary}</span></p>
-          <p class="text-on-surface-variant text-xs truncate">${h.detail}</p>
+          <p class="font-semibold text-sm">${FINANCIAL_TYPE_LABELS[type] ?? r.record_type} <span class="text-on-surface-variant font-normal">&middot; ${r.subsidiary} &middot; ${detail}</span></p>
+          <p class="text-on-surface-variant text-xs truncate">"${r.first_name} ${r.last_name}" &middot; ${r.email ?? "no email on file"}</p>
         </div>
       </div>
       <div class="flex items-center gap-3">
-        <span class="font-semibold text-sm">${GBP.format(h.value)}</span>
-        ${confidenceBadge(h.match_probability)}
+        <span class="font-semibold text-sm">${GBP.format(value)}</span>
+        ${confidenceBadge(r.match_probability)}
       </div>
     </div>`;
 }
@@ -669,7 +644,7 @@ async function loadProfile(masterPersonId) {
   const totalLiquid = p.cash + p.savings + p.investments;
   const pct = (v) => (totalLiquid > 0 ? Math.round((v / totalLiquid) * 100) : 0);
   const tierClass = WEALTH_TIER_CLASSES[p.wealth_tier] || WEALTH_TIER_CLASSES["Mass Market"];
-  const financialHoldings = toFinancialHoldings(p);
+  const linkedRecords = toLinkedRecords(p);
 
   container.innerHTML = `
     <div class="grid grid-cols-12 gap-6">
@@ -719,25 +694,15 @@ async function loadProfile(masterPersonId) {
           <div class="p-6 border-b border-border flex justify-between items-center">
             <div>
               <h3 class="text-base font-semibold">Data Lineage &amp; Record Linkage</h3>
-              <p class="text-on-surface-variant text-xs">Splink entity-resolution results for this profile</p>
+              <p class="text-on-surface-variant text-xs">Every subsidiary record - payroll and banking products alike - resolved into this profile</p>
             </div>
             ${confidenceBadge(p.match_probability)}
           </div>
           <div class="divide-y divide-border/60">
-            ${p.linked_records.map(linkedRecordRow).join("")}
-          </div>
-        </div>
-
-        <div class="wealth-card rounded-lg overflow-hidden">
-          <div class="p-6 border-b border-border">
-            <h3 class="text-base font-semibold">Financial Holdings by Subsidiary</h3>
-            <p class="text-on-surface-variant text-xs">Salary and banking products linked to this profile, by subsidiary</p>
-          </div>
-          <div class="divide-y divide-border/60">
             ${
-              financialHoldings.length
-                ? financialHoldings.map(financialHoldingRow).join("")
-                : `<div class="p-5 text-center text-on-surface-variant text-sm">No financial records on file.</div>`
+              linkedRecords.length
+                ? linkedRecords.map(recordRow).join("")
+                : `<div class="p-5 text-center text-on-surface-variant text-sm">No linked records on file.</div>`
             }
           </div>
         </div>
@@ -746,7 +711,7 @@ async function loadProfile(masterPersonId) {
       <div class="col-span-12 lg:col-span-5 space-y-6">
         <div class="wealth-card rounded-lg p-6">
           <h3 class="text-base font-semibold mb-1">Match Explanation</h3>
-          <p class="text-on-surface-variant text-xs mb-4">Field-by-field agreement across this profile's ${p.record_count} linked record(s)</p>
+          <p class="text-on-surface-variant text-xs mb-4">Field-by-field agreement across this profile's ${p.records.length} linked record(s)</p>
           <div>${p.field_agreement.map(fieldAgreementRow).join("")}</div>
         </div>
 

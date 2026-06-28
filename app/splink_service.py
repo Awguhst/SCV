@@ -12,11 +12,11 @@ Why these Splink configuration choices?
 --------------------------------------------------------------------------
 * **link_type="dedupe_only"**: every noisy record - payroll and product
   alike - lives in a single pool (there is no second "dataset" to link
-  against) - we are deduplicating one combined table, not linking two
-  separate tables. `_load_linkage_pool()` is what actually unions the two
-  origin tables together before Splink ever sees them; everything below
+  against) - we are deduplicating one table, not linking two separate
+  tables. `_load_linkage_pool()` is what reads every noisy record from the
+  unified `records` table before Splink ever sees it; everything below
   this point operates purely on column names it doesn't know or care
-  whether a row came from payroll or a product holding.
+  whether a row's `record_type` is payroll or a product holding.
 
 * **DuckDBAPI backend**: Splink's in-process DuckDB engine is fast enough
   for tens of thousands of rows, requires no external services, and
@@ -131,24 +131,20 @@ def _deterministic_rules() -> list[str]:
 
 
 def _load_linkage_pool(conn: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    """Load every record Splink should resolve together: payroll
-    `source_records` and banking-product `product_records`, projected to
-    just the columns Splink actually uses (the unique id plus the 7 noisy
-    comparison columns). Payroll-only payload columns (`employee_id`,
-    `annual_salary`, `bonus`) and product-only ones (`account_id`,
-    `record_type`, `balance`) are deliberately left out of this projection
-    - Splink never reads them, and they're semantically different enough
-    (an employee_id is not an account_id) that merging them under shared
-    column names would be misleading rather than convenient."""
+    """Load every record Splink should resolve together: every row of the
+    unified `records` table (payroll and banking-product alike), projected
+    to just the columns Splink actually uses (the unique id plus the 7
+    noisy comparison columns). `record_type` and the type-specific payload
+    columns (`employee_id`/`annual_salary`/`bonus` for payroll,
+    `account_id`/`balance` for products) are deliberately left out of this
+    projection - Splink never reads them, and they're semantically
+    different enough (an employee_id is not an account_id) that exposing
+    them to the comparison model would be misleading rather than useful."""
     return conn.execute(
         """
         SELECT source_record_id, person_index, subsidiary,
                first_name, last_name, date_of_birth, email, phone, address, city, postcode
-        FROM source_records
-        UNION ALL
-        SELECT source_record_id, person_index, subsidiary,
-               first_name, last_name, date_of_birth, email, phone, address, city, postcode
-        FROM product_records
+        FROM records
         """
     ).df()
 
@@ -221,8 +217,8 @@ def run_full_pipeline() -> LinkageResult:
     """Run the end-to-end Splink pipeline and persist results to DuckDB.
 
     Writes one table, `clusters`: source_record_id, master_person_id,
-    match_probability. Every noisy record in the linkage pool - payroll
-    `source_records` *and* banking-product `product_records` alike - is
+    match_probability. Every noisy record in the linkage pool - every row
+    of the unified `records` table, payroll and banking-product alike - is
     resolved into this same cluster space; both attach to a profile the
     same way, via `clusters`, in `wealth_service.py`. There is no separate
     clean-index bridge any more.

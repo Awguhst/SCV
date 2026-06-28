@@ -87,11 +87,23 @@ class DashboardSummaryResponse(BaseModel):
 
 
 class LinkedRecord(BaseModel):
-    """One subsidiary's raw source record, as linked into a resolved profile."""
+    """One subsidiary's raw noisy record, as linked into a resolved profile -
+    payroll or banking-product alike, distinguished by `record_type`. This
+    is a genuinely Splink-resolved cluster member; `match_probability` is
+    this record's own per-record linkage confidence, not a trusted
+    ground-truth attachment. Payroll-only fields (`employee_id`,
+    `annual_salary`, `bonus`) and product-only fields (`account_id`,
+    `balance`) are nullable, populated only for the relevant `record_type`.
+    A person may hold several records of the same `record_type` (e.g.
+    multiple current accounts), each tagged with the subsidiary it sits at."""
 
     source_record_id: str
     subsidiary: str
-    employee_id: str
+    record_type: str = Field(
+        ..., description="One of 'PAYROLL', 'CURRENT_ACCOUNT', 'SAVINGS_ACCOUNT', 'INVESTMENT', 'MORTGAGE'."
+    )
+    employee_id: str | None
+    account_id: str | None
     first_name: str
     last_name: str
     date_of_birth: str
@@ -100,37 +112,11 @@ class LinkedRecord(BaseModel):
     address: str | None
     city: str | None
     postcode: str | None
-    annual_salary: float
-    bonus: float
+    annual_salary: float | None
+    bonus: float | None
+    balance: float | None
     currency: str
     match_probability: float = Field(..., description="This record's own per-record linkage confidence.")
-
-
-class ProductHolding(BaseModel):
-    """One banking-product account held by a resolved profile, tagged with
-    the subsidiary it sits at. Like a payroll source record, this is a
-    genuinely Splink-resolved cluster member - match_probability is this
-    holding's own per-record linkage confidence, not a trusted ground-truth
-    attachment. A person may hold several of these per product type,
-    spread across different subsidiaries. Carries the same noisy identity
-    fields a payroll LinkedRecord does, since it was captured (and noised)
-    the same way by that subsidiary's own system."""
-
-    product_type: str = Field(
-        ..., description="One of 'current_account', 'savings_account', 'investment', 'mortgage'."
-    )
-    account_id: str
-    subsidiary: str
-    balance: float
-    match_probability: float = Field(..., description="This holding's own per-record linkage confidence.")
-    first_name: str
-    last_name: str
-    date_of_birth: str
-    email: str | None
-    phone: str | None
-    address: str | None
-    city: str | None
-    postcode: str | None
 
 
 class FieldAgreement(BaseModel):
@@ -150,14 +136,15 @@ class WealthProfileDetailResponse(WealthProfileResponse):
     wealth_tier: str = Field(..., description="Segment derived from net_wealth, e.g. 'High Net Worth'.")
     wealth_score: float = Field(..., description="Percentile rank (0-100) of net_wealth across all resolved profiles.")
     match_probability: float = Field(..., description="Average per-record linkage confidence for this cluster.")
-    record_count: int
-    linked_subsidiaries: list[str]
+    record_count: int = Field(..., description="Number of linked PAYROLL records specifically (not banking products).")
+    linked_subsidiaries: list[str] = Field(..., description="Subsidiaries with a linked PAYROLL record for this profile.")
     primary_city: str | None
     primary_postcode: str | None
-    linked_records: list[LinkedRecord]
-    field_agreement: list[FieldAgreement]
-    product_holdings: list[ProductHolding] = Field(
-        ..., description="Every banking-product account held by this profile, tagged with its subsidiary."
+    records: list[LinkedRecord] = Field(
+        ..., description="Every record linked into this profile - payroll and banking-product alike."
+    )
+    field_agreement: list[FieldAgreement] = Field(
+        ..., description="Field-by-field agreement across every linked record (payroll and banking-product)."
     )
 
 

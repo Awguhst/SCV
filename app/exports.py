@@ -97,6 +97,9 @@ def build_profile_pdf(profile: dict) -> bytes:
     """Render one resolved profile's full dossier as a PDF - same dict
     shape `wealth_service.get_profile_detail()` returns (and that backs the
     Profile page / `/wealth/{id}/detail` JSON response)."""
+    payroll_records = [r for r in profile["records"] if r["record_type"] == "PAYROLL"]
+    product_records = [r for r in profile["records"] if r["record_type"] != "PAYROLL"]
+
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=20 * mm, bottomMargin=20 * mm)
     story = []
@@ -151,7 +154,7 @@ def build_profile_pdf(profile: dict) -> bytes:
 
     story.append(Paragraph("Linked subsidiary records", _PDF_STYLES["Heading3"]))
     record_rows = [["Subsidiary", "Employee ID", "Name", "Salary", "Confidence"]]
-    for r in profile["linked_records"]:
+    for r in payroll_records:
         record_rows.append(
             [
                 r["subsidiary"],
@@ -176,16 +179,16 @@ def build_profile_pdf(profile: dict) -> bytes:
     story.append(Spacer(1, 8 * mm))
 
     story.append(Paragraph("Banking products by subsidiary", _PDF_STYLES["Heading3"]))
-    if profile["product_holdings"]:
+    if product_records:
         holding_rows = [["Product", "Subsidiary", "Account ID", "Balance", "Confidence"]]
-        for h in profile["product_holdings"]:
+        for r in product_records:
             holding_rows.append(
                 [
-                    h["product_type"].replace("_", " ").title(),
-                    h["subsidiary"],
-                    h["account_id"],
-                    f"£{h['balance']:,.0f}",
-                    f"{h['match_probability']:.1%}",
+                    r["record_type"].replace("_", " ").title(),
+                    r["subsidiary"],
+                    r["account_id"],
+                    f"£{r['balance']:,.0f}",
+                    f"{r['match_probability']:.1%}",
                 ]
             )
         holding_table = Table(holding_rows, hAlign="LEFT")

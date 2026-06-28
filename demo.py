@@ -41,18 +41,19 @@ def main() -> None:
         # Note: a person can now hold more than one account of the same
         # product type (each at a possibly different subsidiary), so the
         # "has every product type" check below uses EXISTS rather than an
-        # INNER JOIN on product_records - joining directly would create a
-        # Cartesian product and inflate COUNT(*) with nothing to do with
-        # the number of subsidiary payroll records, which is what this
-        # query actually needs to count.
+        # INNER JOIN on the unified `records` table - joining directly
+        # would create a Cartesian product and inflate COUNT(*) with
+        # nothing to do with the number of subsidiary payroll records,
+        # which is what this query actually needs to count.
         demo_person_index = conn.execute(
             """
             SELECT s.person_index
-            FROM source_records s
-            WHERE EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'current_account')
-              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'savings_account')
-              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'investment')
-              AND EXISTS (SELECT 1 FROM product_records p WHERE p.person_index = s.person_index AND p.record_type = 'mortgage')
+            FROM records s
+            WHERE s.record_type = 'PAYROLL'
+              AND EXISTS (SELECT 1 FROM records p WHERE p.person_index = s.person_index AND p.record_type = 'CURRENT_ACCOUNT')
+              AND EXISTS (SELECT 1 FROM records p WHERE p.person_index = s.person_index AND p.record_type = 'SAVINGS_ACCOUNT')
+              AND EXISTS (SELECT 1 FROM records p WHERE p.person_index = s.person_index AND p.record_type = 'INVESTMENT')
+              AND EXISTS (SELECT 1 FROM records p WHERE p.person_index = s.person_index AND p.record_type = 'MORTGAGE')
             GROUP BY s.person_index
             HAVING COUNT(*) >= 3 AND COUNT(DISTINCT LOWER(s.first_name)) >= 2
             ORDER BY s.person_index
@@ -64,8 +65,8 @@ def main() -> None:
         before_payroll_rows = conn.execute(
             """
             SELECT subsidiary, employee_id, first_name, last_name, email, phone, address, postcode, annual_salary
-            FROM source_records
-            WHERE person_index = ?
+            FROM records
+            WHERE person_index = ? AND record_type = 'PAYROLL'
             ORDER BY subsidiary
             """,
             [demo_person_index],
@@ -82,8 +83,8 @@ def main() -> None:
         before_product_rows = conn.execute(
             """
             SELECT subsidiary, record_type, account_id, first_name, last_name, email, phone, address, postcode, balance
-            FROM product_records
-            WHERE person_index = ?
+            FROM records
+            WHERE person_index = ? AND record_type != 'PAYROLL'
             ORDER BY subsidiary
             """,
             [demo_person_index],
@@ -114,9 +115,9 @@ def main() -> None:
         master_person_id = conn.execute(
             """
             SELECT c.master_person_id
-            FROM source_records s
+            FROM records s
             JOIN clusters c USING (source_record_id)
-            WHERE s.person_index = ?
+            WHERE s.person_index = ? AND s.record_type = 'PAYROLL'
             LIMIT 1
             """,
             [demo_person_index],
@@ -127,8 +128,8 @@ def main() -> None:
             """
             SELECT s.subsidiary, c.match_probability
             FROM clusters c
-            JOIN source_records s USING (source_record_id)
-            WHERE c.master_person_id = ?
+            JOIN records s USING (source_record_id)
+            WHERE c.master_person_id = ? AND s.record_type = 'PAYROLL'
             ORDER BY s.subsidiary
             """,
             [master_person_id],
@@ -140,8 +141,8 @@ def main() -> None:
             """
             SELECT p.subsidiary, p.record_type, c.match_probability
             FROM clusters c
-            JOIN product_records p USING (source_record_id)
-            WHERE c.master_person_id = ?
+            JOIN records p USING (source_record_id)
+            WHERE c.master_person_id = ? AND p.record_type != 'PAYROLL'
             ORDER BY p.subsidiary
             """,
             [master_person_id],
@@ -163,12 +164,13 @@ def main() -> None:
         print(f"Mortgage:      £{profile['mortgage']:,.0f}")
         print(f"Net Wealth:    £{profile['net_wealth']:,.0f}")
 
-        holdings = wealth_service.get_profile_detail(master_person_id)["product_holdings"]
+        profile_records = wealth_service.get_profile_detail(master_person_id)["records"]
+        holdings = [r for r in profile_records if r["record_type"] != "PAYROLL"]
         n_subsidiaries = len({h["subsidiary"] for h in holdings})
         print(f"\n{len(holdings)} banking-product account(s) across {n_subsidiaries} subsidiary(ies):")
         for h in holdings:
             print(
-                f"- [{h['subsidiary']}] {h['product_type']}: £{h['balance']:,.0f}  "
+                f"- [{h['subsidiary']}] {h['record_type']}: £{h['balance']:,.0f}  "
                 f"(confidence: {h['match_probability']:.1%})"
             )
     finally:

@@ -1,26 +1,26 @@
-"""Wealth aggregation: turns Splink clusters + banking-product tables into
-the bank's "golden" Single View of Wealth per resolved individual.
+"""Wealth aggregation: turns Splink clusters + the unified `records` table
+into the bank's "golden" Single View of Wealth per resolved individual.
 
 Aggregation choices worth calling out:
 
 * **salary** is the *average* annual_salary across a cluster's linked
-  source records, not the sum. Duplicate records represent the same
-  underlying employment captured slightly differently by each
-  subsidiary's payroll feed (rounding, timing, minor re-entry); summing
-  would double-count one job, while min/max would arbitrarily discard a
-  data point. Averaging reconciles the small, expected discrepancies
-  between feeds.
+  payroll records (`record_type = 'PAYROLL'`), not the sum. Duplicate
+  records represent the same underlying employment captured slightly
+  differently by each subsidiary's payroll feed (rounding, timing, minor
+  re-entry); summing would double-count one job, while min/max would
+  arbitrarily discard a data point. Averaging reconciles the small,
+  expected discrepancies between feeds.
 * **cash / savings / investments / mortgage** are *summed* across all of
   a person's accounts of that type, since someone can genuinely hold
   multiple current accounts, ISAs, etc., and each one contributes real
   wealth/liability.
 * Banking products are no longer a clean, ground-truth attachment. Each
-  product account (`product_records`) carries the same kind of noisy,
-  independently-captured identity fields payroll records do, and flows
-  through the *same* Splink dedupe pool (see `splink_service.py`). A
-  product attaches to a `master_person_id` exactly the way a payroll
-  record does - by being a member of that cluster in the `clusters`
-  table - not via any ground-truth shortcut. This means product
+  product account (a `records` row with a non-`'PAYROLL'` `record_type`)
+  carries the same kind of noisy, independently-captured identity fields
+  payroll records do, and flows through the *same* Splink dedupe pool (see
+  `splink_service.py`). A product attaches to a `master_person_id` exactly
+  the way a payroll record does - by being a member of that cluster in the
+  `clusters` table - not via any ground-truth shortcut. This means product
   attachment is now subject to genuine linkage error (a product could in
   principle be merged into the wrong person's cluster, or fail to merge
   into the right one) the same way a noisy payroll record always has
@@ -57,28 +57,19 @@ def _wealth_tier(net_wealth: float) -> str:
 _WEALTH_PROFILES_SQL = """
 CREATE OR REPLACE TABLE wealth_profiles AS
 WITH name_counts AS (
-    -- Drawn from every record in the cluster regardless of origin -
-    -- payroll and banking-product records are equally first-class,
-    -- noisy identity captures now. Pulling from both also guarantees a
-    -- cluster gets a display name even in the (rare, linkage-error) case
-    -- where every payroll record ends up split into a different cluster
-    -- than this person's product records.
+    -- Drawn from every record in the cluster regardless of record_type -
+    -- payroll and banking-product records are equally first-class, noisy
+    -- identity captures now, all living in one `records` table. This also
+    -- guarantees a cluster gets a display name even in the (rare, linkage-
+    -- error) case where every payroll record ends up split into a
+    -- different cluster than this person's product records.
     SELECT
         c.master_person_id,
-        s.first_name,
-        s.last_name,
+        r.first_name,
+        r.last_name,
         COUNT(*) AS occurrences
     FROM clusters c
-    JOIN source_records s USING (source_record_id)
-    GROUP BY 1, 2, 3
-    UNION ALL
-    SELECT
-        c.master_person_id,
-        p.first_name,
-        p.last_name,
-        COUNT(*) AS occurrences
-    FROM clusters c
-    JOIN product_records p USING (source_record_id)
+    JOIN records r USING (source_record_id)
     GROUP BY 1, 2, 3
 ),
 ranked_names AS (
@@ -106,37 +97,38 @@ best_name AS (
     WHERE rn = 1
 ),
 salary_agg AS (
-    SELECT c.master_person_id, AVG(s.annual_salary) AS salary
+    SELECT c.master_person_id, AVG(r.annual_salary) AS salary
     FROM clusters c
-    JOIN source_records s USING (source_record_id)
+    JOIN records r USING (source_record_id)
+    WHERE r.record_type = 'PAYROLL'
     GROUP BY 1
 ),
 cash_agg AS (
-    SELECT c.master_person_id, SUM(p.balance) AS cash
+    SELECT c.master_person_id, SUM(r.balance) AS cash
     FROM clusters c
-    JOIN product_records p USING (source_record_id)
-    WHERE p.record_type = 'current_account'
+    JOIN records r USING (source_record_id)
+    WHERE r.record_type = 'CURRENT_ACCOUNT'
     GROUP BY 1
 ),
 savings_agg AS (
-    SELECT c.master_person_id, SUM(p.balance) AS savings
+    SELECT c.master_person_id, SUM(r.balance) AS savings
     FROM clusters c
-    JOIN product_records p USING (source_record_id)
-    WHERE p.record_type = 'savings_account'
+    JOIN records r USING (source_record_id)
+    WHERE r.record_type = 'SAVINGS_ACCOUNT'
     GROUP BY 1
 ),
 investments_agg AS (
-    SELECT c.master_person_id, SUM(p.balance) AS investments
+    SELECT c.master_person_id, SUM(r.balance) AS investments
     FROM clusters c
-    JOIN product_records p USING (source_record_id)
-    WHERE p.record_type = 'investment'
+    JOIN records r USING (source_record_id)
+    WHERE r.record_type = 'INVESTMENT'
     GROUP BY 1
 ),
 mortgage_agg AS (
-    SELECT c.master_person_id, SUM(p.balance) AS mortgage
+    SELECT c.master_person_id, SUM(r.balance) AS mortgage
     FROM clusters c
-    JOIN product_records p USING (source_record_id)
-    WHERE p.record_type = 'mortgage'
+    JOIN records r USING (source_record_id)
+    WHERE r.record_type = 'MORTGAGE'
     GROUP BY 1
 )
 SELECT
@@ -159,7 +151,8 @@ LEFT JOIN mortgage_agg mtg USING (master_person_id)
 
 
 def build_wealth_profiles() -> int:
-    """(Re)build the `wealth_profiles` table from clusters + banking products.
+    """(Re)build the `wealth_profiles` table from clusters + the unified
+    `records` table.
 
     Returns the number of golden profiles created.
     """
@@ -190,7 +183,8 @@ _FIELD_AGREEMENT_COLUMNS = ("email", "phone", "address", "postcode", "date_of_bi
 
 def get_profile_detail(master_person_id: str) -> dict | None:
     """The full profile dossier behind the "Profile" page: the golden wealth
-    profile plus the raw linked source records and a field-by-field agreement
+    profile plus every linked record (payroll and banking-product alike,
+    via the unified `records` table) and a field-by-field agreement
     breakdown explaining *why* Splink linked these records (and flagging
     anywhere the underlying records still disagree)."""
     conn = get_connection()
@@ -218,58 +212,53 @@ def get_profile_detail(master_person_id: str) -> dict | None:
         record_rows = conn.execute(
             """
             SELECT
-                s.source_record_id, s.subsidiary, s.employee_id, s.first_name, s.last_name,
-                s.date_of_birth, s.email, s.phone, s.address, s.city, s.postcode,
-                s.annual_salary, s.bonus, s.currency, c.match_probability
+                r.source_record_id, r.subsidiary, r.record_type, r.employee_id, r.account_id,
+                r.first_name, r.last_name, r.date_of_birth, r.email, r.phone, r.address, r.city, r.postcode,
+                r.annual_salary, r.bonus, r.balance, r.currency, c.match_probability
             FROM clusters c
-            JOIN source_records s USING (source_record_id)
+            JOIN records r USING (source_record_id)
             WHERE c.master_person_id = ?
-            ORDER BY s.subsidiary
+            ORDER BY r.record_type, r.subsidiary
             """,
             [master_person_id],
         ).fetchall()
         record_cols = [c[0] for c in conn.description]
-        linked_records = [dict(zip(record_cols, row)) for row in record_rows]
+        all_records = [dict(zip(record_cols, row)) for row in record_rows]
+        profile["records"] = all_records
 
-        holding_rows = conn.execute(
-            """
-            SELECT
-                p.record_type AS product_type, p.account_id, p.subsidiary, p.balance, c.match_probability,
-                p.first_name, p.last_name, p.date_of_birth, p.email, p.phone, p.address, p.city, p.postcode
-            FROM clusters c
-            JOIN product_records p USING (source_record_id)
-            WHERE c.master_person_id = ?
-            ORDER BY product_type, subsidiary
-            """,
-            [master_person_id],
-        ).fetchall()
-        holding_cols = [c[0] for c in conn.description]
-        product_holdings = [dict(zip(holding_cols, row)) for row in holding_rows]
+        # record_count/linked_subsidiaries/primary_city/primary_postcode keep
+        # their historical, payroll-specific meaning: the generator caps
+        # payroll records at 1-4 per person, while banking products have no
+        # such cap, so counting both together here would conflate two
+        # different things.
+        payroll_records = [r for r in all_records if r["record_type"] == "PAYROLL"]
+        profile["record_count"] = len(payroll_records)
+        profile["linked_subsidiaries"] = sorted({r["subsidiary"] for r in payroll_records})
 
-        profile["record_count"] = len(linked_records)
-        profile["linked_subsidiaries"] = sorted({r["subsidiary"] for r in linked_records})
         # Usually averaged just over linked payroll records, but a cluster can
         # (rare linkage-split edge case) end up with zero payroll members and
-        # only banking-product ones - fall back to product confidence so this
-        # never divides by zero, consistent with name_counts treating both
-        # record origins as equally first-class evidence for this cluster.
-        all_confidences = [r["match_probability"] for r in linked_records] + [
-            h["match_probability"] for h in product_holdings
-        ]
+        # only banking-product ones - averaging over every record in the
+        # cluster means this never divides by zero, consistent with
+        # name_counts treating both record kinds as equally first-class
+        # evidence for this cluster.
+        all_confidences = [r["match_probability"] for r in all_records]
         profile["match_probability"] = round(sum(all_confidences) / len(all_confidences), 6)
-        profile["linked_records"] = linked_records
-        profile["product_holdings"] = product_holdings
 
-        cities = [r["city"] for r in linked_records if r["city"]]
-        postcodes = [r["postcode"] for r in linked_records if r["postcode"]]
+        cities = [r["city"] for r in payroll_records if r["city"]]
+        postcodes = [r["postcode"] for r in payroll_records if r["postcode"]]
         profile["primary_city"] = Counter(cities).most_common(1)[0][0] if cities else None
         profile["primary_postcode"] = Counter(postcodes).most_common(1)[0][0] if postcodes else None
 
+        # Field agreement spans every linked record - payroll and banking
+        # product alike - since both carry the same noisy, independently-
+        # captured identity fields. Restricting this to payroll only would
+        # ignore real evidence and would trivially mark every field
+        # "consistent" for the rare all-product, zero-payroll cluster.
         profile["field_agreement"] = [
             {
                 "field": field,
-                "is_consistent": len({r[field] for r in linked_records if r[field]}) <= 1,
-                "distinct_values": sorted({r[field] for r in linked_records if r[field]}),
+                "is_consistent": len({r[field] for r in all_records if r[field]}) <= 1,
+                "distinct_values": sorted({r[field] for r in all_records if r[field]}),
             }
             for field in _FIELD_AGREEMENT_COLUMNS
         ]
@@ -289,7 +278,7 @@ def get_showcase_example() -> dict | None:
     qualifying candidates, one that also holds at least one banking product
     is preferred (so the showcase can tell the product story too), but this
     is only a soft preference - it never overrides the hard requirements
-    above. Picked from the live `clusters`/`source_records` tables only - no
+    above. Picked from the live `clusters`/`records` tables only - no
     ground truth involved, so this works exactly the same way it would in
     production.
 
@@ -303,14 +292,15 @@ def get_showcase_example() -> dict | None:
             """
             SELECT c.master_person_id
             FROM clusters c
-            JOIN source_records s USING (source_record_id)
+            JOIN records s USING (source_record_id)
+            WHERE s.record_type = 'PAYROLL'
             GROUP BY c.master_person_id
             HAVING COUNT(*) BETWEEN 3 AND 4 AND COUNT(DISTINCT LOWER(s.first_name)) >= 2
             ORDER BY
                 EXISTS (
                     SELECT 1 FROM clusters pc
-                    JOIN product_records pr USING (source_record_id)
-                    WHERE pc.master_person_id = c.master_person_id
+                    JOIN records pr USING (source_record_id)
+                    WHERE pc.master_person_id = c.master_person_id AND pr.record_type != 'PAYROLL'
                 ) DESC,
                 COUNT(*) DESC,
                 c.master_person_id
@@ -338,20 +328,23 @@ def get_showcase_example() -> dict | None:
 
 _CLUSTER_STATS_CTE = """
     cluster_stats AS (
-        -- LEFT JOIN (not INNER): a cluster can consist entirely of
-        -- banking-product records with zero payroll members (a rare
-        -- linkage-split edge case) - subsidiaries/record_count stay scoped
-        -- to payroll records specifically (their documented meaning
+        -- LEFT JOIN (not INNER), with the record_type filter in the join
+        -- condition rather than a WHERE clause: a cluster can consist
+        -- entirely of banking-product records with zero payroll members (a
+        -- rare linkage-split edge case) - subsidiaries/record_count stay
+        -- scoped to payroll records specifically (their documented meaning
         -- elsewhere), but every cluster must still get a row here, or it
         -- would be silently invisible in search/the Directory despite
         -- correctly appearing in wealth_profiles and the dashboard totals.
+        -- Putting the record_type filter in a WHERE after the join would
+        -- silently turn this back into an inner join for those clusters.
         SELECT
             c.master_person_id,
             COALESCE(LIST(DISTINCT s.subsidiary) FILTER (WHERE s.subsidiary IS NOT NULL), []) AS subsidiaries,
             COUNT(s.source_record_id) AS record_count,
             AVG(c.match_probability) AS match_probability
         FROM clusters c
-        LEFT JOIN source_records s USING (source_record_id)
+        LEFT JOIN records s ON s.source_record_id = c.source_record_id AND s.record_type = 'PAYROLL'
         GROUP BY 1
     )
 """
@@ -359,9 +352,11 @@ _CLUSTER_STATS_CTE = """
 
 def search_person(query: str, limit: int = 50) -> tuple[list[dict], int]:
     """Search resolved profiles by name, matching either the chosen display
-    name or any of the underlying linked source records (so a search for
-    "Jonathan Smith" still finds a cluster whose display name resolved to
-    the more common "John Smith" variant).
+    name or any of the underlying linked records - payroll or banking
+    product alike, since both carry the same noisy identity fields - so a
+    search for "Jonathan Smith" still finds a cluster whose display name
+    resolved to the more common "John Smith" variant, even if that spelling
+    only appears on one of the person's banking-product holdings.
 
     An empty/blank query skips filtering entirely and instead browses *all*
     profiles alphabetically by name - this is what powers the Directory
@@ -380,7 +375,7 @@ def search_person(query: str, limit: int = 50) -> tuple[list[dict], int]:
                 SELECT COUNT(*) FROM (
                     SELECT DISTINCT c.master_person_id
                     FROM clusters c
-                    JOIN source_records s USING (source_record_id)
+                    JOIN records s USING (source_record_id)
                     WHERE (s.first_name || ' ' || s.last_name) ILIKE ?
                     UNION
                     SELECT master_person_id FROM wealth_profiles WHERE name ILIKE ?
@@ -393,7 +388,7 @@ def search_person(query: str, limit: int = 50) -> tuple[list[dict], int]:
                 WITH matched_clusters AS (
                     SELECT DISTINCT c.master_person_id
                     FROM clusters c
-                    JOIN source_records s USING (source_record_id)
+                    JOIN records s USING (source_record_id)
                     WHERE (s.first_name || ' ' || s.last_name) ILIKE ?
                     UNION
                     SELECT master_person_id FROM wealth_profiles WHERE name ILIKE ?
@@ -437,8 +432,8 @@ def get_dashboard_summary() -> dict:
             conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0] if "persons" in tables else 0
         )
         source_records = (
-            conn.execute("SELECT COUNT(*) FROM source_records").fetchone()[0]
-            if "source_records" in tables
+            conn.execute("SELECT COUNT(*) FROM records WHERE record_type = 'PAYROLL'").fetchone()[0]
+            if "records" in tables
             else 0
         )
 
@@ -476,18 +471,18 @@ def get_dashboard_summary() -> dict:
             ) = (float(x) for x in row)
 
         subsidiary_record_counts: dict[str, int] = {}
-        if "source_records" in tables:
+        if "records" in tables:
             subsidiary_record_counts = dict(
                 conn.execute(
-                    "SELECT subsidiary, COUNT(*) FROM source_records GROUP BY 1 ORDER BY 1"
+                    "SELECT subsidiary, COUNT(*) FROM records WHERE record_type = 'PAYROLL' GROUP BY 1 ORDER BY 1"
                 ).fetchall()
             )
 
         product_subsidiary_counts: dict[str, int] = {}
-        if "product_records" in tables:
+        if "records" in tables:
             product_subsidiary_counts = dict(
                 conn.execute(
-                    "SELECT subsidiary, COUNT(*) FROM product_records GROUP BY 1 ORDER BY 1"
+                    "SELECT subsidiary, COUNT(*) FROM records WHERE record_type != 'PAYROLL' GROUP BY 1 ORDER BY 1"
                 ).fetchall()
             )
 
@@ -569,7 +564,7 @@ def get_quality_metrics(review_queue_size: int = 10) -> dict:
                     COUNT(*) AS record_count,
                     LIST(DISTINCT s.subsidiary) AS subsidiaries
                 FROM clusters c
-                JOIN source_records s USING (source_record_id)
+                JOIN records s ON s.source_record_id = c.source_record_id AND s.record_type = 'PAYROLL'
                 GROUP BY 1
             ) cs USING (master_person_id)
             WHERE cs.record_count > 1
