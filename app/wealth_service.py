@@ -432,7 +432,7 @@ def get_dashboard_summary() -> dict:
             conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0] if "persons" in tables else 0
         )
         source_records = (
-            conn.execute("SELECT COUNT(*) FROM records WHERE record_type = 'PAYROLL'").fetchone()[0]
+            conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
             if "records" in tables
             else 0
         )

@@ -266,7 +266,7 @@ async function loadDashboard() {
   grid.innerHTML = [
     kpiCard("Total Net Wealth", GBP.format(d.total_net_wealth), "account_balance", "Cash + savings + investments − mortgage"),
     kpiCard("Total Assets", GBP.format(d.total_assets), "savings", "Cash + savings + investments"),
-    kpiCard("Source Records", INT.format(d.source_records), "database", "Noisy records across 5 subsidiaries"),
+    kpiCard("Source Records", INT.format(d.source_records), "database", "Payroll + banking product records"),
     kpiCard("Clusters Resolved", INT.format(d.clusters), "bubble_chart", "master_person_id groups"),
     kpiCard("Duplicates Found", INT.format(d.duplicates_found), "auto_fix_high", "Records merged into another cluster"),
     kpiCard("Avg Match Confidence", (d.avg_match_probability * 100).toFixed(2) + "%", "verified", "Mean per-record linkage confidence"),

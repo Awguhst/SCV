@@ -55,7 +55,7 @@ def _bootstrap_demo_data() -> None:
     logger.info("Demo users ready (admin, analyst).")
 
     if not data_generator.has_generated_data():
-        logger.info("No data found - generating synthetic dataset (10,000 people / 25,000 records)...")
+        logger.info("No data found - generating synthetic dataset (10,000 people / ~25,000 payroll + banking-product records)...")
         result = data_generator.generate_all()
         logger.info("Generated %s people / %s records.", result.people, result.records)
     else:

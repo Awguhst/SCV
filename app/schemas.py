@@ -13,7 +13,7 @@ class GenerateDataResponse(BaseModel):
     """Response for POST /generate-data."""
 
     people: int = Field(..., description="Number of unique ground-truth people generated.")
-    records: int = Field(..., description="Total noisy source records generated across all subsidiaries.")
+    records: int = Field(..., description="Total noisy records (payroll + banking product) generated across all subsidiaries.")
 
 
 class RunLinkageResponse(BaseModel):
@@ -62,7 +62,7 @@ class DashboardSummaryResponse(BaseModel):
     """Response for GET /dashboard."""
 
     unique_people: int = Field(..., description="Ground-truth people generated (ALWAYS the data-gen figure).")
-    source_records: int = Field(..., description="Total noisy source records ingested from subsidiaries.")
+    source_records: int = Field(..., description="Total noisy records (payroll + banking product) ingested from subsidiaries.")
     clusters: int = Field(..., description="Resolved master_person_id clusters after Splink linkage.")
     avg_match_probability: float = Field(..., description="Mean per-record linkage confidence across all clusters.")
     total_assets: float = Field(..., description="Sum of cash + savings + investments across all wealth profiles.")

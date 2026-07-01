@@ -33,27 +33,25 @@ from app.models import ProductBundle, RecordType, Subsidiary
 # ---------------------------------------------------------------------------
 # Reproducibility & scale constants
 # ---------------------------------------------------------------------------
-SEED = 777
+SEED = 69
 N_PEOPLE = 10_000
 SUBSIDIARIES = [s.value for s in Subsidiary]
 # Short, stable per-subsidiary code (the enum member name, e.g. "A") used as
 # the employee_id prefix - independent of the subsidiary's display name.
 SUBSIDIARY_CODES = {s.value: s.name for s in Subsidiary}
 
-# Distribution of "how many subsidiaries recorded this person" chosen so the
-# totals are *exact*, not just approximately on target:
-#   2,000 people x 1 record + 3,000 x 2 + 3,000 x 3 + 2,000 x 4
-#   = 10,000 people, 25,000 payroll records
-RECORD_COUNT_DISTRIBUTION = {1: 2000, 2: 3000, 3: 3000, 4: 2000}
+# Each person appears in exactly one subsidiary's payroll feed:
+#   10,000 people x 1 record = 10,000 payroll records
+RECORD_COUNT_DISTRIBUTION = {1: 10_000}
 N_RECORDS = sum(count * n for n, count in RECORD_COUNT_DISTRIBUTION.items())
 
 # Banking-product bundle distribution (must sum to N_PEOPLE)
 PRODUCT_BUNDLE_DISTRIBUTION = {
-    ProductBundle.ONLY_PAYROLL: 2000,
-    ProductBundle.PAYROLL_DEPOSITS: 2500,
-    ProductBundle.PAYROLL_INVESTMENTS: 1500,
-    ProductBundle.PAYROLL_MORTGAGE: 1500,
-    ProductBundle.ALL_PRODUCTS: 2500,
+    ProductBundle.ONLY_PAYROLL: 5000,
+    ProductBundle.PAYROLL_DEPOSITS: 1500,
+    ProductBundle.PAYROLL_INVESTMENTS: 1000,
+    ProductBundle.PAYROLL_MORTGAGE: 1000,
+    ProductBundle.ALL_PRODUCTS: 1500,
 }
 
 # Weights (not exact totals - the population each product type applies to is
@@ -618,7 +616,7 @@ def generate_all(seed: int = SEED) -> GenerationResult:
 
     return GenerationResult(
         people=len(persons_df),
-        records=len(source_records_df),
+        records=len(all_records_df),
         persons_df=persons_df,
         records_df=all_records_df,
     )
