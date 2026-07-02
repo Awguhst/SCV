@@ -69,6 +69,50 @@ def build_directory_csv(q: str = "") -> str:
     return buffer.getvalue()
 
 
+def build_segment_members_csv(tier: str) -> str:
+    """CSV of every resolved profile assigned to one net-worth tier - mirrors
+    what the Employee Segments drill-down table shows, without its
+    on-screen limit."""
+    rows, _total = wealth_service.get_segment_members(tier, limit=DIRECTORY_EXPORT_LIMIT)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "master_person_id",
+            "name",
+            "wealth_tier",
+            "linked_subsidiaries",
+            "record_count",
+            "match_probability",
+            "salary",
+            "cash",
+            "savings",
+            "investments",
+            "mortgage",
+            "net_wealth",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row["master_person_id"],
+                row["name"],
+                tier,
+                "|".join(row["subsidiaries"]),
+                row["record_count"],
+                round(float(row["match_probability"]), 6),
+                row["salary"],
+                row["cash"],
+                row["savings"],
+                row["investments"],
+                row["mortgage"],
+                row["net_wealth"],
+            ]
+        )
+    return buffer.getvalue()
+
+
 def build_review_queue_csv(limit: int = DEFAULT_REVIEW_QUEUE_EXPORT_LIMIT) -> str:
     """CSV of the lowest-confidence multi-record clusters, worst first -
     the full manual-review backlog rather than the dashboard's top-10."""

@@ -54,7 +54,7 @@ users                 -- username, password_hash, role, created_at  (login accou
 
 A person may hold zero, one, or several rows of a given product type, each tagged
 with the subsidiary it sits at and independently noised - reflecting how a real
-banking group's customers scatter products across its subsidiary banks (a mortgage
+banking group's employees scatter products across its subsidiary banks (a mortgage
 at one, savings at another), each captured imperfectly by that subsidiary's own
 system, not just a single undifferentiated holding per type.
 

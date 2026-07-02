@@ -13,7 +13,7 @@ table, distinguished by its `record_type` column.
 Nothing here is real data - it is all Faker-generated - but the shapes
 and the data-quality issues mirror what a real banking group sees when
 consolidating feeds from subsidiaries that have never agreed on a common
-customer or employee identifier.
+employee identifier.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from app.models import ProductBundle, RecordType, Subsidiary
 # ---------------------------------------------------------------------------
 # Reproducibility & scale constants
 # ---------------------------------------------------------------------------
-SEED = 69
+SEED = 6999
 N_PEOPLE = 10_000
 SUBSIDIARIES = [s.value for s in Subsidiary]
 # Short, stable per-subsidiary code (the enum member name, e.g. "A") used as
@@ -57,10 +57,10 @@ PRODUCT_BUNDLE_DISTRIBUTION = {
 # Weights (not exact totals - the population each product type applies to is
 # itself a derived subset of N_PEOPLE, not known up front) for "how many
 # accounts of a given product type does a person who holds that product
-# have". Most customers keep a single current account / savings pot / ISA /
+# have". Most employees keep a single current account / savings pot / ISA /
 # mortgage, with a shrinking minority holding more than one - often at a
 # different subsidiary, which is exactly the cross-subsidiary diversity a
-# real banking group's customer base shows.
+# real banking group's employee base shows.
 ACCOUNT_COUNT_WEIGHTS = {1: 0.75, 2: 0.18, 3: 0.05, 4: 0.02}
 
 # ---------------------------------------------------------------------------

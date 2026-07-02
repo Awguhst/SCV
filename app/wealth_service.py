@@ -54,6 +54,21 @@ def _wealth_tier(net_wealth: float) -> str:
             return label
     return _WEALTH_TIER_TOP
 
+
+def _wealth_tier_case_sql(column: str = "net_wealth") -> str:
+    """Build a SQL CASE expression equivalent to `_wealth_tier()`, so tier
+    assignment can be pushed into a GROUP BY/WHERE instead of computed
+    row-by-row in Python. Derived from `_WEALTH_TIERS`/`_WEALTH_TIER_TOP` so
+    the two can never drift apart - there is exactly one place tier
+    thresholds are defined."""
+    clauses = " ".join(f"WHEN {column} < {ceiling} THEN '{label}'" for ceiling, label in _WEALTH_TIERS)
+    return f"CASE {clauses} ELSE '{_WEALTH_TIER_TOP}' END"
+
+
+# Ordered tier labels, lowest to highest net worth - used to sort segment
+# summaries and to validate a requested tier in the members lookup.
+_WEALTH_TIER_ORDER = [label for _, label in _WEALTH_TIERS] + [_WEALTH_TIER_TOP]
+
 _WEALTH_PROFILES_SQL = """
 CREATE OR REPLACE TABLE wealth_profiles AS
 WITH name_counts AS (
@@ -270,15 +285,19 @@ def get_profile_detail(master_person_id: str) -> dict | None:
 
 def get_showcase_example() -> dict | None:
     """Pick one resolved cluster that makes a good "before/after Splink"
-    showcase for the dashboard: 3-4 linked payroll records (the generator
-    never gives one ground-truth person more than 4 - a bigger cluster than
-    that is itself a false-merge linkage error, not a clean example to
-    showcase) with at least 2 different first-name spellings/variants among
-    them, so the "before" side visibly looks like unrelated people. Among
-    qualifying candidates, one that also holds at least one banking product
-    is preferred (so the showcase can tell the product story too), but this
-    is only a soft preference - it never overrides the hard requirements
-    above. Picked from the live `clusters`/`records` tables only - no
+    showcase for the dashboard: 3-4 total linked records (the current
+    generator gives every ground-truth person exactly one payroll record -
+    all the "same person, different-looking records" duplication signal
+    lives in banking-product records instead, so this looks across all
+    linked record types, not payroll alone) with at least 2 different
+    first-name spellings/variants among them, so the "before" side visibly
+    looks like unrelated people. Among qualifying candidates, one that also
+    holds at least one banking product is preferred (so the showcase can
+    tell the product story too), but this is only a soft preference - it
+    never overrides the hard requirements above (in practice this
+    preference rarely changes the outcome now, since almost every
+    qualifying 3-4-record cluster already includes a banking-product
+    record). Picked from the live `clusters`/`records` tables only - no
     ground truth involved, so this works exactly the same way it would in
     production.
 
@@ -293,7 +312,6 @@ def get_showcase_example() -> dict | None:
             SELECT c.master_person_id
             FROM clusters c
             JOIN records s USING (source_record_id)
-            WHERE s.record_type = 'PAYROLL'
             GROUP BY c.master_person_id
             HAVING COUNT(*) BETWEEN 3 AND 4 AND COUNT(DISTINCT LOWER(s.first_name)) >= 2
             ORDER BY
@@ -514,7 +532,15 @@ def get_quality_metrics(review_queue_size: int = 10) -> dict:
     try:
         tables = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
         if "clusters" not in tables:
-            return {"match_probability_histogram": [], "cluster_size_distribution": [], "review_queue": []}
+            return {
+                "match_probability_histogram": [],
+                "cluster_size_distribution": [],
+                "review_queue": [],
+                "total_clusters": 0,
+                "avg_match_probability": 0.0,
+                "multi_record_cluster_count": 0,
+                "high_confidence_pct": 0.0,
+            }
 
         histogram_rows = conn.execute(
             """
@@ -553,6 +579,11 @@ def get_quality_metrics(review_queue_size: int = 10) -> dict:
             {"label": label, "count": size_counts.get(label, 0)} for label in size_order
         ]
 
+        # Counts every linked record type, not just PAYROLL - the current
+        # generator gives each person exactly one payroll record, so all
+        # genuine multi-record duplication now lives in banking-product
+        # records (matches how cluster_size_distribution's `sizes` CTE above
+        # already counts, unfiltered by record_type).
         review_queue_rows = conn.execute(
             """
             SELECT wp.master_person_id, wp.name, cs.match_probability, cs.record_count, cs.subsidiaries
@@ -562,9 +593,9 @@ def get_quality_metrics(review_queue_size: int = 10) -> dict:
                     c.master_person_id,
                     AVG(c.match_probability) AS match_probability,
                     COUNT(*) AS record_count,
-                    LIST(DISTINCT s.subsidiary) AS subsidiaries
+                    LIST(DISTINCT s.subsidiary) FILTER (WHERE s.subsidiary IS NOT NULL) AS subsidiaries
                 FROM clusters c
-                JOIN records s ON s.source_record_id = c.source_record_id AND s.record_type = 'PAYROLL'
+                JOIN records s ON s.source_record_id = c.source_record_id
                 GROUP BY 1
             ) cs USING (master_person_id)
             WHERE cs.record_count > 1
@@ -584,11 +615,138 @@ def get_quality_metrics(review_queue_size: int = 10) -> dict:
             for r in review_queue_rows
         ]
 
+        totals_row = conn.execute(
+            "SELECT COUNT(DISTINCT master_person_id), AVG(match_probability) FROM clusters"
+        ).fetchone()
+        total_clusters = int(totals_row[0]) if totals_row and totals_row[0] is not None else 0
+        avg_match_probability = round(float(totals_row[1]), 6) if totals_row and totals_row[1] is not None else 0.0
+        # Clusters with 2+ linked records of any type - i.e. genuinely
+        # deduplicated identities. Derived from size_counts (already computed
+        # above for cluster_size_distribution) rather than a new query.
+        multi_record_cluster_count = total_clusters - size_counts.get('1', 0)
+        # histogram_counts buckets *records* (one clusters row per linked
+        # record), not clusters, so the denominator here must be the total
+        # record count from that same histogram - not total_clusters, which
+        # would produce a >100% figure.
+        total_linked_records = sum(histogram_counts.values())
+        high_confidence_pct = (
+            round((histogram_counts.get('>= 0.99', 0) / total_linked_records * 100), 2) if total_linked_records else 0.0
+        )
+
         return {
             "match_probability_histogram": match_probability_histogram,
             "cluster_size_distribution": cluster_size_distribution,
             "review_queue": review_queue,
+            "total_clusters": total_clusters,
+            "avg_match_probability": avg_match_probability,
+            "multi_record_cluster_count": multi_record_cluster_count,
+            "high_confidence_pct": high_confidence_pct,
         }
+    finally:
+        conn.close()
+
+
+def get_segmentation_summary() -> dict:
+    """Groups every resolved wealth profile into the bank's 5 net-worth
+    tiers (see `_WEALTH_TIERS`) for the Employee Segments page: one summary
+    row per tier with population share and average holdings, so an analyst
+    can see the shape of the book at a glance before drilling into any one
+    tier's members."""
+    conn = get_connection()
+    try:
+        tables = {row[0] for row in conn.execute("SHOW TABLES").fetchall()}
+        if "wealth_profiles" not in tables:
+            return {"total_profiles": 0, "segments": []}
+
+        tier_case = _wealth_tier_case_sql()
+        rows = conn.execute(
+            f"""
+            SELECT
+                {tier_case} AS wealth_tier,
+                COUNT(*) AS employee_count,
+                SUM(net_wealth) AS total_net_wealth,
+                AVG(net_wealth) AS avg_net_wealth,
+                AVG(salary) AS avg_salary,
+                AVG(savings) AS avg_savings
+            FROM wealth_profiles
+            GROUP BY 1
+            """
+        ).fetchall()
+        columns = [c[0] for c in conn.description]
+        by_tier = {row[0]: dict(zip(columns, row)) for row in rows}
+
+        total_profiles = conn.execute("SELECT COUNT(*) FROM wealth_profiles").fetchone()[0]
+
+        # Tier floor/ceiling for the "net-worth range" shown on each card -
+        # derived from _WEALTH_TIERS/_WEALTH_TIER_TOP directly (not from
+        # data) so an empty tier still shows its correct defined range
+        # instead of nulls, and so all 5 tiers always render even if one
+        # has zero members in this dataset. Each _WEALTH_TIERS tuple is
+        # (ceiling, label) - a label's floor is the *previous* tuple's
+        # ceiling (or unbounded/None for the first label), matching the
+        # short-circuiting `if net_wealth < ceiling` order in _wealth_tier().
+        tier_bounds = []
+        for i, (ceiling, label) in enumerate(_WEALTH_TIERS):
+            floor = _WEALTH_TIERS[i - 1][0] if i > 0 else None
+            tier_bounds.append((label, floor, ceiling))
+        tier_bounds.append((_WEALTH_TIER_TOP, _WEALTH_TIERS[-1][0], None))
+
+        segments = []
+        for label, floor, ceiling in tier_bounds:
+            stats = by_tier.get(label)
+            employee_count = stats["employee_count"] if stats else 0
+            segments.append(
+                {
+                    "wealth_tier": label,
+                    "min_net_wealth": float(floor) if floor is not None else None,
+                    "max_net_wealth": float(ceiling) if ceiling is not None else None,
+                    "employee_count": employee_count,
+                    "pct_of_population": round(employee_count / total_profiles * 100, 2)
+                    if total_profiles
+                    else 0.0,
+                    "total_net_wealth": round(float(stats["total_net_wealth"]), 2) if stats else 0.0,
+                    "avg_net_wealth": round(float(stats["avg_net_wealth"]), 2) if stats else 0.0,
+                    "avg_salary": round(float(stats["avg_salary"]), 2) if stats else 0.0,
+                    "avg_savings": round(float(stats["avg_savings"]), 2) if stats else 0.0,
+                }
+            )
+
+        return {"total_profiles": total_profiles, "segments": segments}
+    finally:
+        conn.close()
+
+
+def get_segment_members(tier: str, limit: int = 50) -> tuple[list[dict], int]:
+    """Members of one net-worth tier (see `_WEALTH_TIERS`), enriched with the
+    same linkage provenance as `search_person()` - powers the Employee
+    Segments drill-down table. Returns (results, total), same contract as
+    `search_person()`.
+
+    Raises ValueError if `tier` isn't one of the 5 known tier labels.
+    """
+    if tier not in _WEALTH_TIER_ORDER:
+        raise ValueError(f"Unknown wealth tier: '{tier}'")
+
+    conn = get_connection()
+    try:
+        tier_case = _wealth_tier_case_sql("wp.net_wealth")
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM wealth_profiles wp WHERE {tier_case} = ?", [tier]
+        ).fetchone()[0]
+        rows = conn.execute(
+            f"""
+            WITH {_CLUSTER_STATS_CTE}
+            SELECT wp.*, cs.subsidiaries, cs.record_count, cs.match_probability
+            FROM wealth_profiles wp
+            JOIN cluster_stats cs USING (master_person_id)
+            WHERE {tier_case} = ?
+            ORDER BY wp.net_wealth DESC
+            LIMIT ?
+            """,
+            [tier, limit],
+        ).fetchall()
+        columns = [c[0] for c in conn.description]
+        return [dict(zip(columns, row)) for row in rows], total
     finally:
         conn.close()
 

@@ -226,15 +226,15 @@ SCV/
   with salary via a triangular distribution peaking at a ~3.5x affordability
   multiple. Net wealth only counts cash + savings + investments - mortgage
   (per the spec's formula) - it does not model property value as an offsetting
-  asset, so "payroll + mortgage only" customers necessarily show negative net
+  asset, so "payroll + mortgage only" employees necessarily show negative net
   wealth by design, not as a bug.
 * Banking products carry the same kind of noisy, independently-captured identity
   fields as payroll records, and are resolved by the *same* Splink pipeline rather than
-  trusted via a clean customer index - closing what used to be a known simplification
+  trusted via a clean employee index - closing what used to be a known simplification
   here. A person can hold multiple accounts of the same product type across different
   subsidiaries (e.g. two savings accounts, one at Calder Wealth Partners, one at
   Ridgeway Private Bank), each independently noised, reflecting how a banking group's
-  customers really do scatter products across its subsidiary banks and how each
+  employees really do scatter products across its subsidiary banks and how each
   subsidiary's own system would record them imperfectly. One simplification this
   introduces: product records reuse payroll's exact noise model (same nickname/
   abbreviation/typo functions, same missing-value rates) rather than modeling

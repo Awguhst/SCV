@@ -171,6 +171,48 @@ class QualityResponse(BaseModel):
     review_queue: list[ReviewQueueItem] = Field(
         ..., description="Lowest-confidence clusters, worst first - candidates for manual analyst review."
     )
+    total_clusters: int = Field(..., description="Total resolved master_person_id clusters in the current dataset.")
+    avg_match_probability: float = Field(..., description="Mean per-record linkage confidence across all clusters.")
+    multi_record_cluster_count: int = Field(
+        ..., description="Clusters with 2 or more linked records of any type - i.e. genuinely deduplicated identities."
+    )
+    high_confidence_pct: float = Field(
+        ..., description="Percentage of linked records with match probability >= 0.99."
+    )
+
+
+class SegmentSummary(BaseModel):
+    """One net-worth tier's aggregate stats - one card on the Employee
+    Segments page."""
+
+    wealth_tier: str = Field(..., description="e.g. 'Affluent'.")
+    min_net_wealth: float | None = Field(
+        None, description="Inclusive lower bound of this tier's net_wealth range, or null for the bottom (unbounded) tier."
+    )
+    max_net_wealth: float | None = Field(
+        None, description="Exclusive upper bound of this tier's net_wealth range, or null for the top (unbounded) tier."
+    )
+    employee_count: int
+    pct_of_population: float = Field(..., description="This tier's share of all resolved profiles, as a percentage.")
+    total_net_wealth: float
+    avg_net_wealth: float
+    avg_salary: float
+    avg_savings: float
+
+
+class SegmentationResponse(BaseModel):
+    """Response for GET /segmentation."""
+
+    total_profiles: int
+    segments: list[SegmentSummary]
+
+
+class SegmentMembersResponse(BaseModel):
+    """Response for GET /segmentation/{tier}/members."""
+
+    wealth_tier: str
+    results: list[SearchResultItem]
+    total: int = Field(..., description="Total members of this tier - may exceed len(results) once limit kicks in.")
 
 
 class HealthResponse(BaseModel):

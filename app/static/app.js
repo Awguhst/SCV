@@ -16,6 +16,21 @@ const CHART_COLORS = {
   border: "#2c2e30",
   muted: "#a89a8e",
   danger: "#e57373",
+  // Material 3 semantic tokens, added for the tier <-> badge color alignment below.
+  // primaryContainer/tertiary are numerically identical to primaryDark/accent
+  // (same M3 seed color/theme) - this is a semantic rename, not a color change.
+  error: "#ffb4ab",
+  secondary: "#c6c6c9",
+  primaryContainer: "#cd7f32",
+  tertiary: "#e9c176",
+};
+
+const SEGMENT_TIER_COLORS = {
+  "Negative Equity": CHART_COLORS.error,
+  "Mass Market": CHART_COLORS.secondary,
+  "Affluent": CHART_COLORS.primary,
+  "High Net Worth": CHART_COLORS.primaryContainer,
+  "Ultra High Net Worth": CHART_COLORS.tertiary,
 };
 
 let charts = {};
@@ -130,9 +145,6 @@ function applyRoleUI(role) {
 async function startApp() {
   hideLogin();
   applyRoleUI(localStorage.getItem(AUTH_ROLE_KEY));
-  document.getElementById("session-user").textContent =
-    `${localStorage.getItem(AUTH_USERNAME_KEY)} (${localStorage.getItem(AUTH_ROLE_KEY)})`;
-  await loadHealth();
   await loadDashboard();
   await runSearch("", { navigate: false }); // pre-populate Directory with the A-Z listing
 }
@@ -185,26 +197,30 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
   }
 });
 
-document.getElementById("btn-logout").addEventListener("click", () => {
-  clearSession();
-  showLogin();
-});
-
 // ---------------------------------------------------------------------------
 // View switching
 // ---------------------------------------------------------------------------
+// The profile page is a sub-page of Directory or Segments (reached only by
+// clicking a result row in either list), not a top-level nav destination -
+// tracks whichever list view it was opened from so the nav highlight and
+// the "Back to ..." button both return there instead of always Directory.
+let lastListView = "directory";
+const LIST_VIEW_LABELS = { directory: "Back to Directory", segments: "Back to Employee Segments" };
+
 function switchView(view) {
   document.querySelectorAll(".view").forEach((el) => el.classList.remove("active"));
   document.getElementById(`view-${view}`).classList.add("active");
 
-  // The profile page is a sub-page of Directory (reached only by clicking a
-  // search result), not a top-level nav destination - keep Directory
-  // highlighted while it's open instead of clearing the nav highlight.
-  const navTarget = view === "profile" ? "directory" : view;
+  const navTarget = view === "profile" ? lastListView : view;
   document.querySelectorAll(".nav-link").forEach((el) => el.classList.remove("active"));
   document.querySelector(`.nav-link[data-view="${navTarget}"]`)?.classList.add("active");
 
+  if (view === "profile") {
+    document.getElementById("btn-back-directory-label").textContent = LIST_VIEW_LABELS[lastListView];
+  }
+
   if (view === "dashboard") loadDashboard();
+  if (view === "segments") loadSegments();
   if (view === "quality") loadQuality();
   if (view === "settings") loadSettings();
 }
@@ -215,22 +231,6 @@ document.querySelectorAll(".nav-link").forEach((btn) => {
   if (!btn.dataset.view) return;
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
-
-// ---------------------------------------------------------------------------
-// Health pill
-// ---------------------------------------------------------------------------
-async function loadHealth() {
-  const pill = document.getElementById("health-pill");
-  try {
-    const health = await api("/health");
-    const ok = health.data_generated && health.linkage_run;
-    pill.innerHTML = `<span class="w-2 h-2 rounded-full ${ok ? "bg-emerald-400" : "bg-amber-400"}"></span> ${
-      ok ? "Linkage up to date" : "Needs generation / linkage"
-    }`;
-  } catch (e) {
-    pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-red-500"></span> API unreachable`;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Dashboard view
@@ -376,7 +376,7 @@ async function loadShowcase() {
   container.innerHTML = `
     <div class="grid grid-cols-12 gap-4 items-stretch">
       <div class="col-span-12 lg:col-span-5 border-2 border-dashed border-red-500/30 rounded-lg p-5 bg-red-500/[0.03]">
-        <span class="badge bg-red-500/15 text-red-400 mb-3 inline-block">Before Splink</span>
+        <span class="badge bg-red-500/15 text-red-400 mb-3 inline-block">Before Linking</span>
         <p class="text-sm text-on-surface-variant mb-4">${showcaseRecords.length} separate subsidiary records (payroll and banking products) look like ${showcaseRecords.length} different people</p>
         <div class="space-y-3">
           ${showcaseRecords.map(showcasePersonCard).join("")}
@@ -385,12 +385,12 @@ async function loadShowcase() {
 
       <div class="col-span-12 lg:col-span-2 flex flex-row lg:flex-col items-center justify-center gap-2 py-4">
         <span class="material-symbols-outlined text-primary text-4xl">arrow_forward</span>
-        <span class="text-[11px] uppercase tracking-wider text-on-surface-variant font-semibold">Splink</span>
+        <span class="text-[11px] uppercase tracking-wider text-on-surface-variant font-semibold">Probabilistic Linkage</span>
         ${confidenceBadge(s.match_probability)}
       </div>
 
       <div class="col-span-12 lg:col-span-5 border-2 border-primary-dark/40 rounded-lg p-5 bg-primary/[0.04] flex flex-col">
-        <span class="badge bg-emerald-500/15 text-emerald-400 mb-3 self-start">After Splink</span>
+        <span class="badge bg-emerald-500/15 text-emerald-400 mb-3 self-start">After Linking</span>
         <div class="flex items-center gap-3 mb-4">
           <div class="w-12 h-12 rounded-full bg-primary-dark/20 border-2 border-primary-dark flex items-center justify-center text-sm font-bold text-primary shrink-0">
             ${initials(s.name)}
@@ -435,6 +435,7 @@ function confidenceBadge(p) {
 }
 
 async function runSearch(query, { navigate = true } = {}) {
+  lastListView = "directory";
   if (navigate) switchView("directory");
 
   const empty = document.getElementById("directory-empty");
@@ -519,11 +520,11 @@ document.getElementById("btn-export-directory").addEventListener("click", () => 
 // Profile detail page
 // ---------------------------------------------------------------------------
 const WEALTH_TIER_CLASSES = {
-  "Negative Equity": "text-red-400 bg-red-500/10 border-red-500/20",
-  "Mass Market": "text-on-surface-variant bg-surface-container-high border-border",
-  "Affluent": "text-accent bg-accent/10 border-accent/20",
-  "High Net Worth": "text-primary bg-primary/10 border-primary/20",
-  "Ultra High Net Worth": "text-primary bg-primary-dark/20 border-primary-dark/40",
+  "Negative Equity": "text-error bg-error/10 border-error/20",
+  "Mass Market": "text-secondary bg-secondary/10 border-secondary/20",
+  "Affluent": "text-primary bg-primary/10 border-primary/20",
+  "High Net Worth": "text-primary-container bg-primary-container/10 border-primary-container/20",
+  "Ultra High Net Worth": "text-tertiary bg-tertiary/10 border-tertiary/20",
 };
 
 function initials(name) {
@@ -746,7 +747,7 @@ async function loadProfile(masterPersonId) {
   });
 }
 
-document.getElementById("btn-back-directory").addEventListener("click", () => switchView("directory"));
+document.getElementById("btn-back-directory").addEventListener("click", () => switchView(lastListView));
 
 // ---------------------------------------------------------------------------
 // Data Quality view
@@ -759,6 +760,14 @@ async function loadQuality() {
     showToast(e.message, true);
     return;
   }
+
+  const qualityGrid = document.getElementById("quality-kpi-grid");
+  qualityGrid.innerHTML = [
+    kpiCard("Total Clusters", INT.format(q.total_clusters), "bubble_chart", "Resolved master_person_id groups"),
+    kpiCard("Avg Match Confidence", (q.avg_match_probability * 100).toFixed(2) + "%", "verified", "Mean per-record linkage confidence"),
+    kpiCard("Multi-Record Clusters", INT.format(q.multi_record_cluster_count), "join", "Clusters with 2+ linked records"),
+    kpiCard("High Confidence Records", q.high_confidence_pct.toFixed(2) + "%", "check_circle", "Linked records with match probability >= 0.99"),
+  ].join("");
 
   destroyChart("confidence");
   charts.confidence = new Chart(document.getElementById("chart-confidence"), {
@@ -796,7 +805,7 @@ async function loadQuality() {
 
   const rows = document.getElementById("review-queue-rows");
   if (q.review_queue.length === 0) {
-    rows.innerHTML = `<tr><td colspan="5" class="px-5 py-8 text-center text-on-surface-variant text-sm">No multi-record clusters found - run linkage first.</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="5" class="px-5 py-8 text-center text-on-surface-variant text-sm">No multi-record clusters currently need review.</td></tr>`;
   } else {
     rows.innerHTML = q.review_queue
       .map(
@@ -815,6 +824,209 @@ async function loadQuality() {
 
 document.getElementById("btn-export-review-queue").addEventListener("click", () => {
   downloadFile("/export/review-queue.csv", "review-queue.csv");
+});
+
+// ---------------------------------------------------------------------------
+// Employee Segments view
+// ---------------------------------------------------------------------------
+function segmentCard(s, { isAggregate = false } = {}) {
+  const rangeLabel = isAggregate
+    ? "All resolved profiles, all tiers"
+    : s.min_net_wealth === null
+    ? `Below ${GBP.format(s.max_net_wealth)}`
+    : s.max_net_wealth === null
+    ? `${GBP.format(s.min_net_wealth)}+`
+    : `${GBP.format(s.min_net_wealth)} - ${GBP.format(s.max_net_wealth)}`;
+  const tierClass = isAggregate
+    ? "text-on-surface bg-outline-variant/20 border-outline-variant/40"
+    : WEALTH_TIER_CLASSES[s.wealth_tier] || WEALTH_TIER_CLASSES["Mass Market"];
+  // The aggregate card is deliberately NOT a `.segment-card` (no data-tier) -
+  // there's no /segmentation/{tier}/members-equivalent endpoint for "all
+  // tiers combined", so it must stay outside the click-to-drill-down wiring.
+  const cardClass = isAggregate ? "wealth-card rounded-xl p-6 text-left w-full" : "segment-card wealth-card rounded-xl p-6 text-left w-full";
+  const tierAttr = isAggregate ? "" : ` data-tier="${s.wealth_tier}"`;
+  return `
+    <button class="${cardClass}"${tierAttr}>
+      <div class="flex items-center justify-between mb-2">
+        <span class="badge border ${tierClass}">${isAggregate ? "ALL EMPLOYEES" : s.wealth_tier}</span>
+        <span class="text-xs text-on-surface-variant">${isAggregate ? "100%" : s.pct_of_population + "%"}</span>
+      </div>
+      <p class="text-xs text-on-surface-variant/60 mb-3">${rangeLabel}</p>
+      <p class="text-2xl font-bold text-on-surface">${INT.format(s.employee_count)}</p>
+      <p class="text-[11px] text-on-surface-variant mb-3">employees</p>
+      <div class="grid grid-cols-2 gap-2 text-xs border-t border-outline-variant/30 pt-3">
+        <div><p class="text-on-surface-variant">Avg net wealth</p><p class="font-semibold">${GBP.format(s.avg_net_wealth)}</p></div>
+        <div><p class="text-on-surface-variant">Total net wealth</p><p class="font-semibold">${GBP.format(s.total_net_wealth)}</p></div>
+        <div><p class="text-on-surface-variant">Avg salary</p><p class="font-semibold">${GBP.format(s.avg_salary)}</p></div>
+        <div><p class="text-on-surface-variant">Avg savings</p><p class="font-semibold">${GBP.format(s.avg_savings)}</p></div>
+      </div>
+    </button>`;
+}
+
+// Whole-book aggregate for the 6th Employee Segments card slot - computed
+// entirely from the existing /segmentation response (no backend change).
+// avg_salary/avg_savings must be employee-count-weighted across the 5 tiers,
+// since an unweighted mean of the tiers' averages would be wrong given how
+// unevenly populated they are (e.g. Mass Market dwarfs Ultra High Net Worth).
+function computeAggregateSegment(d) {
+  const totalProfiles = d.total_profiles || 0;
+  const totalNetWealth = d.segments.reduce((sum, s) => sum + s.total_net_wealth, 0);
+  const weightedSalary = d.segments.reduce((sum, s) => sum + s.avg_salary * s.employee_count, 0);
+  const weightedSavings = d.segments.reduce((sum, s) => sum + s.avg_savings * s.employee_count, 0);
+  return {
+    wealth_tier: "All Employees",
+    employee_count: totalProfiles,
+    total_net_wealth: totalNetWealth,
+    avg_net_wealth: totalProfiles ? totalNetWealth / totalProfiles : 0,
+    avg_salary: totalProfiles ? weightedSalary / totalProfiles : 0,
+    avg_savings: totalProfiles ? weightedSavings / totalProfiles : 0,
+  };
+}
+
+async function loadSegments() {
+  const grid = document.getElementById("segment-cards");
+  grid.innerHTML = Array(6)
+    .fill('<div class="wealth-card rounded-xl p-6 h-48"><div class="skeleton w-full h-full rounded"></div></div>')
+    .join("");
+  document.getElementById("segment-members-panel").classList.add("hidden");
+
+  let d;
+  try {
+    d = await api("/segmentation");
+  } catch (e) {
+    showToast(e.message, true);
+    grid.innerHTML = `<div class="wealth-card rounded-xl p-8 text-center text-on-surface-variant text-sm col-span-full">${e.message}</div>`;
+    return;
+  }
+
+  grid.innerHTML =
+    d.segments.map((s) => segmentCard(s)).join("") + segmentCard(computeAggregateSegment(d), { isAggregate: true });
+
+  destroyChart("segmentPopulation");
+  charts.segmentPopulation = new Chart(document.getElementById("chart-segment-population"), {
+    type: "doughnut",
+    data: {
+      labels: d.segments.map((s) => s.wealth_tier),
+      datasets: [
+        {
+          data: d.segments.map((s) => s.employee_count),
+          backgroundColor: d.segments.map((s) => SEGMENT_TIER_COLORS[s.wealth_tier]),
+          borderColor: "#1a1c1e",
+          borderWidth: 2,
+        },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+    },
+  });
+
+  document.getElementById("segment-population-legend").innerHTML = d.segments
+    .map(
+      (s) => `
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color:${SEGMENT_TIER_COLORS[s.wealth_tier]}"></span>
+          <span class="text-xs text-on-surface-variant truncate">${s.wealth_tier}</span>
+        </div>`
+    )
+    .join("");
+
+  destroyChart("segmentWealth");
+  charts.segmentWealth = new Chart(document.getElementById("chart-segment-wealth"), {
+    type: "bar",
+    data: {
+      labels: d.segments.map((s) => s.wealth_tier),
+      datasets: [
+        {
+          data: d.segments.map((s) => s.total_net_wealth),
+          backgroundColor: d.segments.map((s) => SEGMENT_TIER_COLORS[s.wealth_tier]),
+          borderRadius: 4,
+        },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#d8c2b2" }, grid: { display: false } },
+        y: { ticks: { color: "#d8c2b2" }, grid: { color: "#2c2e30" } },
+      },
+    },
+  });
+}
+
+document.getElementById("segment-cards").addEventListener("click", (e) => {
+  const card = e.target.closest(".segment-card");
+  if (!card) return;
+  loadSegmentMembers(card.dataset.tier);
+});
+
+async function loadSegmentMembers(tier) {
+  lastListView = "segments";
+  const panel = document.getElementById("segment-members-panel");
+  const title = document.getElementById("segment-members-title");
+  const caption = document.getElementById("segment-members-caption");
+  const rows = document.getElementById("segment-members-rows");
+
+  panel.classList.remove("hidden");
+  panel.dataset.tier = tier;
+  title.textContent = `${tier} - Members`;
+  caption.textContent = "Loading members...";
+  rows.innerHTML = "";
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  let data;
+  try {
+    data = await api(`/segmentation/${encodeURIComponent(tier)}/members`);
+  } catch (e) {
+    showToast(e.message, true);
+    caption.textContent = "Failed to load members - see toast for details.";
+    return;
+  }
+
+  if (data.results.length === 0) {
+    caption.textContent = `No employees currently in "${tier}".`;
+    rows.innerHTML = "";
+    return;
+  }
+
+  rows.innerHTML = data.results
+    .map(
+      (r) => `
+        <tr class="hover:bg-surface-container-high transition-colors">
+          <td class="px-5 py-3 font-mono text-xs text-primary">${r.master_person_id}</td>
+          <td class="px-5 py-3 font-medium">${r.name}</td>
+          <td class="px-5 py-3 text-xs text-on-surface-variant">${r.linked_subsidiaries.join(", ")}</td>
+          <td class="px-5 py-3 text-right">${GBP.format(r.salary)}</td>
+          <td class="px-5 py-3 text-right font-semibold">${GBP.format(r.net_wealth)}</td>
+          <td class="px-5 py-3 text-center">${confidenceBadge(r.match_probability)}</td>
+          <td class="px-5 py-3 text-center">
+            <button class="view-segment-profile text-on-surface-variant hover:text-primary" data-id="${r.master_person_id}">
+              <span class="material-symbols-outlined text-base">visibility</span>
+            </button>
+          </td>
+        </tr>`
+    )
+    .join("");
+
+  caption.textContent = `Showing ${INT.format(data.results.length)} of ${INT.format(data.total)} employees in "${tier}"`;
+}
+
+document.getElementById("segment-members-rows").addEventListener("click", (e) => {
+  const btn = e.target.closest(".view-segment-profile");
+  if (!btn) return;
+  loadProfile(btn.dataset.id);
+});
+
+document.getElementById("btn-close-segment-members").addEventListener("click", () => {
+  document.getElementById("segment-members-panel").classList.add("hidden");
+});
+
+document.getElementById("btn-export-segment-members").addEventListener("click", () => {
+  const tier = document.getElementById("segment-members-panel").dataset.tier;
+  if (!tier) return;
+  downloadFile(`/export/segment-members.csv?tier=${encodeURIComponent(tier)}`, `segment-${tier.toLowerCase().replace(/ /g, "-")}.csv`);
 });
 
 // ---------------------------------------------------------------------------
@@ -841,9 +1053,9 @@ async function generateData(btn) {
   try {
     const result = await api("/generate-data", { method: "POST" });
     showToast(`Generated ${INT.format(result.people)} people / ${INT.format(result.records)} records.`);
-    await loadHealth();
     const view = activeView();
     if (view === "dashboard") await loadDashboard();
+    if (view === "segments") await loadSegments();
   } catch (e) {
     showToast(e.message, true);
   } finally {
@@ -852,13 +1064,13 @@ async function generateData(btn) {
 }
 
 async function runLinkage(btn) {
-  setBusy(btn, true, "Running Splink (~20s)...");
+  setBusy(btn, true, "Running linkage (~20s)...");
   try {
     const result = await api("/run-linkage", { method: "POST" });
     showToast(`Linkage complete: ${INT.format(result.clusters)} clusters, ${INT.format(result.duplicates_found)} duplicates found.`);
-    await loadHealth();
     const view = activeView();
     if (view === "dashboard") await loadDashboard();
+    if (view === "segments") await loadSegments();
     if (view === "quality") await loadQuality();
     if (view === "directory") {
       await runSearch(document.getElementById("search-input").value, { navigate: false });
@@ -878,7 +1090,7 @@ document.getElementById("btn-linkage").addEventListener("click", (e) => runLinka
 // ---------------------------------------------------------------------------
 const ROLE_BADGE_CLASSES = {
   admin: "text-primary bg-primary/10 border-primary/20",
-  analyst: "text-on-surface-variant bg-surface-container-high border-border",
+  analyst: "text-secondary bg-secondary/10 border-secondary/20",
 };
 
 function loadSettings() {

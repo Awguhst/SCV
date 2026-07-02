@@ -40,7 +40,7 @@ class ProductBundle(str, Enum):
 
     Used only during synthetic data generation to guarantee the demo
     covers every combination called out in the spec (payroll-only
-    customers, deposit-only customers, etc.).
+    employees, deposit-only employees, etc.).
     """
 
     ONLY_PAYROLL = "only_payroll"
@@ -130,7 +130,7 @@ class ClusterAssignment(BaseModel):
 
 
 class WealthProfile(BaseModel):
-    """The aggregated "golden" customer profile for one resolved person."""
+    """The aggregated "golden" employee profile for one resolved person."""
 
     master_person_id: str
     name: str

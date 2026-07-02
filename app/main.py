@@ -35,6 +35,8 @@ from app.schemas import (
     RunLinkageResponse,
     SearchResponse,
     SearchResultItem,
+    SegmentationResponse,
+    SegmentMembersResponse,
     TokenResponse,
     UserResponse,
     WealthProfileDetailResponse,
@@ -321,6 +323,60 @@ def quality() -> QualityResponse:
 
 
 @app.get(
+    "/segmentation",
+    response_model=SegmentationResponse,
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def segmentation() -> SegmentationResponse:
+    """Groups every resolved wealth profile into the bank's 5 net-worth
+    tiers (Negative Equity / Mass Market / Affluent / High Net Worth /
+    Ultra High Net Worth) and returns per-tier summary stats - feeds the
+    Employee Segments page's summary cards and charts."""
+    if not wealth_service.has_wealth_profiles():
+        raise HTTPException(status_code=400, detail="No wealth profiles found. Call POST /run-linkage first.")
+    return SegmentationResponse(**wealth_service.get_segmentation_summary())
+
+
+@app.get(
+    "/segmentation/{tier}/members",
+    response_model=SegmentMembersResponse,
+    tags=["Wealth"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def segmentation_members(
+    tier: str,
+    limit: int = Query(50, description="Max members to return, highest net worth first."),
+) -> SegmentMembersResponse:
+    """Resolved profiles assigned to one net-worth tier, e.g.
+    `/segmentation/Affluent/members` - powers the Employee Segments
+    drill-down table. `tier` must be one of the 5 known tier labels."""
+    if not wealth_service.has_wealth_profiles():
+        raise HTTPException(status_code=400, detail="No wealth profiles found. Call POST /run-linkage first.")
+    try:
+        rows, total = wealth_service.get_segment_members(tier, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    results = [
+        SearchResultItem(
+            master_person_id=row["master_person_id"],
+            name=row["name"],
+            salary=row["salary"],
+            cash=row["cash"],
+            savings=row["savings"],
+            investments=row["investments"],
+            mortgage=row["mortgage"],
+            net_wealth=row["net_wealth"],
+            linked_subsidiaries=list(row["subsidiaries"]),
+            record_count=row["record_count"],
+            match_probability=round(float(row["match_probability"]), 6),
+        )
+        for row in rows
+    ]
+    return SegmentMembersResponse(wealth_tier=tier, results=results, total=total)
+
+
+@app.get(
     "/export/directory.csv",
     tags=["Exports"],
     dependencies=[Depends(auth.get_current_user)],
@@ -359,4 +415,26 @@ def export_review_queue_csv(
         content=csv_text,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="review-queue.csv"'},
+    )
+
+
+@app.get(
+    "/export/segment-members.csv",
+    tags=["Exports"],
+    dependencies=[Depends(auth.get_current_user)],
+)
+def export_segment_members_csv(
+    tier: str = Query(..., description="Wealth tier to export, e.g. 'Affluent' - same labels shown on the Employee Segments page."),
+) -> Response:
+    """Download every resolved profile assigned to one net-worth tier as CSV."""
+    if not wealth_service.has_wealth_profiles():
+        raise HTTPException(status_code=400, detail="No wealth profiles found. Call POST /run-linkage first.")
+    try:
+        csv_text = exports.build_segment_members_csv(tier)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="segment-{tier.lower().replace(" ", "-")}.csv"'},
     )

@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>WealthLink | Single View of Wealth</title>
+<title>WealthLink AI | Single View of Wealth</title>
 <link rel="icon" href="data:," />
-<script src="https://cdn.tailwindcss.com"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" />
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <script id="tailwind-config">
   tailwind.config = {
@@ -14,6 +14,7 @@
     theme: {
       extend: {
         colors: {
+          // --- existing keys, kept (existing markup depends on these names) ---
           background: "#131313",
           surface: "#131313",
           "surface-container": "#1c1b1b",
@@ -24,9 +25,87 @@
           "primary-dark": "#cd7f32",
           accent: "#e9c176",
           "on-surface": "#e5e2e1",
-          "on-surface-variant": "#a89a8e",
+          "on-surface-variant": "#d8c2b2", // refined M3 tone, same role as before
+
+          // --- additive Material 3 tokens (same seed color/theme) ---
+          "primary-container": "#cd7f32",
+          "on-primary": "#4c2700",
+          "on-primary-container": "#432200",
+          "on-primary-fixed": "#2e1500",
+          "on-primary-fixed-variant": "#6c3a00",
+          "primary-fixed": "#ffdcc1",
+          "primary-fixed-dim": "#ffb779",
+          "inverse-primary": "#8e4e00",
+          "surface-tint": "#ffb779",
+
+          secondary: "#c6c6c9",
+          "on-secondary": "#2f3133",
+          "secondary-container": "#454749",
+          "on-secondary-container": "#b4b5b7",
+          "secondary-fixed": "#e2e2e5",
+          "secondary-fixed-dim": "#c6c6c9",
+          "on-secondary-fixed-variant": "#454749",
+
+          tertiary: "#e9c176",
+          "on-tertiary": "#412d00",
+          "tertiary-container": "#af8c47",
+          "on-tertiary-container": "#392700",
+          "tertiary-fixed": "#ffdea5",
+          "tertiary-fixed-dim": "#e9c176",
+          "on-tertiary-fixed": "#261900",
+          "on-tertiary-fixed-variant": "#5d4201",
+
+          error: "#ffb4ab",
+          "on-error": "#690005",
+          "error-container": "#93000a",
+          "on-error-container": "#ffdad6",
+
+          outline: "#a18d7f",
+          "outline-variant": "#534438",
+          "surface-variant": "#353534",
+          "surface-dim": "#131313",
+          "surface-bright": "#393939",
+          "surface-container-lowest": "#0e0e0e",
+          "surface-container-low": "#1c1b1b",
+          "surface-container-highest": "#353534",
+          "inverse-surface": "#e5e2e1",
+          "inverse-on-surface": "#313030",
         },
-        fontFamily: { sans: ["Inter", "sans-serif"] },
+        fontFamily: {
+          sans: ["Inter", "sans-serif"],
+          "body-md": ["Inter"],
+          "body-lg": ["Inter"],
+          "display-lg": ["Inter"],
+          "display-lg-mobile": ["Inter"],
+          "headline-md": ["Inter"],
+          "title-lg": ["Inter"],
+          "numeric-data": ["Inter"],
+          "label-caps": ["Inter"],
+        },
+        fontSize: {
+          "body-md": ["14px", { lineHeight: "20px", fontWeight: "400" }],
+          "body-lg": ["16px", { lineHeight: "24px", fontWeight: "400" }],
+          "display-lg": ["48px", { lineHeight: "56px", letterSpacing: "-0.02em", fontWeight: "700" }],
+          "display-lg-mobile": ["32px", { lineHeight: "40px", letterSpacing: "-0.02em", fontWeight: "700" }],
+          "headline-md": ["24px", { lineHeight: "32px", letterSpacing: "-0.01em", fontWeight: "600" }],
+          "title-lg": ["20px", { lineHeight: "28px", fontWeight: "600" }],
+          "numeric-data": ["18px", { lineHeight: "24px", fontWeight: "500" }],
+          "label-caps": ["12px", { lineHeight: "16px", letterSpacing: "0.05em", fontWeight: "600" }],
+        },
+        spacing: {
+          gutter: "24px",
+          "card-gap": "16px",
+          base: "8px",
+          "desktop-max-width": "1440px",
+          "container-padding": "32px",
+        },
+        borderRadius: {
+          DEFAULT: "0.125rem",
+          lg: "0.25rem",
+          xl: "0.5rem",
+          // "full" intentionally omitted - keep Tailwind's true-circle default
+          // (9999px) so avatar circles / legend dots stay round.
+        },
       },
     },
   };
@@ -34,10 +113,11 @@
 <style>
   body { background-color: #131313; color: #e5e2e1; font-family: 'Inter', sans-serif; }
   .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 350, 'GRAD' 0, 'opsz' 24; font-size: 20px; vertical-align: middle; }
-  .wealth-card { background-color: #1a1c1e; border: 1px solid #2c2e30; transition: border-color .2s ease, box-shadow .2s ease; }
-  .wealth-card:hover { border-color: #cd7f32; box-shadow: 0 0 20px rgba(205,127,50,0.08); }
+  .wealth-card { background: rgba(26, 28, 30, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(205, 127, 50, 0.1); transition: all .3s ease; }
+  .wealth-card:hover { border-color: rgba(205, 127, 50, 0.3); box-shadow: 0 0 20px rgba(205,127,50,0.05); }
   .nav-link.active { color: #ffb779; background: rgba(205,127,50,0.1); border-right: 3px solid #ffb779; }
   .nav-link:not(.active):hover { background-color: #242322; }
+  .nav-link.active .material-symbols-outlined { font-variation-settings: 'FILL' 1, 'wght' 350, 'GRAD' 0, 'opsz' 24; }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: #131313; }
   ::-webkit-scrollbar-thumb { background: #2c2e30; border-radius: 10px; }
@@ -45,7 +125,7 @@
   @keyframes loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
   .view { display: none; }
   .view.active { display: block; }
-  .badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 0.125rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; }
   .toast { transition: opacity .3s ease, transform .3s ease; }
 </style>
 </head>
@@ -54,7 +134,7 @@
 <div id="login-overlay" class="fixed inset-0 z-[100] flex items-center justify-center bg-background px-4">
   <div class="w-full max-w-sm bg-card border border-border rounded-lg p-8 space-y-6">
     <div>
-      <h1 class="text-xl font-bold text-primary">WealthLink</h1>
+      <h1 class="text-xl font-bold text-primary">WealthLink AI</h1>
       <p class="text-on-surface-variant text-sm">Sign in to the Single View of Wealth platform</p>
     </div>
     <form id="login-form" class="space-y-4">
@@ -81,10 +161,10 @@
   </div>
 </div>
 
-<div id="app-shell" class="hidden">
-<aside class="h-screen w-64 fixed left-0 top-0 bg-surface-container border-r border-border flex flex-col py-6 z-50">
+<div id="app-shell" class="hidden w-full">
+<aside class="h-screen w-64 fixed left-0 top-0 bg-surface/80 backdrop-blur-xl border-r border-outline-variant flex flex-col py-6 z-50">
   <div class="px-6 pb-6">
-    <h1 class="text-xl font-bold text-primary">WealthLink</h1>
+    <h1 class="text-xl font-bold text-primary">WealthLink AI</h1>
     <p class="text-on-surface-variant text-sm">Single View of Wealth</p>
   </div>
   <nav class="flex-1 px-3 space-y-1">
@@ -94,6 +174,9 @@
     <button data-view="directory" class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
       <span class="material-symbols-outlined">folder_shared</span> Directory
     </button>
+    <button data-view="segments" class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
+      <span class="material-symbols-outlined">groups</span> Employee Segments
+    </button>
     <button data-view="quality" class="nav-link w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
       <span class="material-symbols-outlined">verified_user</span> Data Quality
     </button>
@@ -101,43 +184,50 @@
       <span class="material-symbols-outlined">description</span> API Docs
     </a>
   </nav>
-  <div class="px-4 pt-4 border-t border-border space-y-3">
+  <div class="px-4 pt-4 border-t border-outline-variant/30 space-y-3">
+    <button class="w-full bg-primary-container text-on-primary-container py-2.5 px-4 font-label-caps text-xs rounded flex items-center justify-center gap-2 hover:opacity-90 transition-all">
+      <span class="material-symbols-outlined text-base">support_agent</span> Contact Advisor
+    </button>
+    <a href="#" class="flex items-center gap-3 px-3 py-2 text-on-surface-variant font-medium hover:text-primary transition-colors text-xs">
+      <span class="material-symbols-outlined text-base">help_outline</span> Support
+    </a>
     <button data-view="settings" class="nav-link w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-on-surface-variant transition-colors">
       <span class="material-symbols-outlined">settings</span> Settings
     </button>
-    <div id="health-pill" class="flex items-center gap-2 px-3 text-xs text-on-surface-variant">
-      <span class="w-2 h-2 rounded-full bg-on-surface-variant"></span> checking...
-    </div>
-    <div class="flex items-center justify-between px-3 text-xs text-on-surface-variant">
-      <span id="session-user" class="truncate"></span>
-      <button id="btn-logout" class="text-on-surface-variant hover:text-primary font-semibold shrink-0 ml-2">Sign out</button>
-    </div>
   </div>
 </aside>
 
 <main class="ml-64 flex-1 flex flex-col min-w-0">
-  <header class="flex justify-between items-center w-full px-8 h-16 bg-surface border-b border-border sticky top-0 z-40 gap-6">
-    <div class="relative max-w-md w-full">
+  <header class="flex justify-between items-center w-full px-8 h-16 bg-surface/80 backdrop-blur-xl border-b border-outline-variant sticky top-0 z-40 gap-6">
+    <div class="relative max-w-md w-full flex items-center bg-surface-container-low border border-outline-variant rounded-lg px-1">
       <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
       <input id="search-input" type="text" placeholder="Search resolved profiles, e.g. 'john smith'"
-        class="w-full bg-surface-container-high border border-border rounded-lg pl-10 pr-4 py-2 text-sm focus:border-primary focus:outline-none transition-colors" />
+        class="w-full bg-transparent border-none pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-0 transition-colors" />
     </div>
-    <div class="flex items-center gap-3 shrink-0">
-      <button id="btn-generate" class="border border-border px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-surface-container-high transition-colors">
-        <span class="material-symbols-outlined text-base">database</span> Generate Data
-      </button>
-      <button id="btn-linkage" class="bg-primary-dark text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:opacity-90 transition-opacity">
-        <span class="material-symbols-outlined text-base">play_arrow</span> Run Linkage
-      </button>
+    <div class="flex items-center gap-6 shrink-0">
+      <div class="flex items-center gap-4 text-on-surface-variant">
+        <button class="hover:text-primary transition-colors"><span class="material-symbols-outlined">notifications</span></button>
+        <button class="hover:text-primary transition-colors"><span class="material-symbols-outlined">history</span></button>
+        <button class="hover:text-primary transition-colors"><span class="material-symbols-outlined">chat</span></button>
+      </div>
+      <div class="h-8 w-[1px] bg-outline-variant"></div>
+      <div class="flex items-center gap-3">
+        <button id="btn-generate" class="border border-outline-variant px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-surface-container-high transition-colors">
+          <span class="material-symbols-outlined text-base">database</span> Generate Data
+        </button>
+        <button id="btn-linkage" class="bg-primary-dark text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:opacity-90 transition-opacity">
+          <span class="material-symbols-outlined text-base">play_arrow</span> Run Linkage
+        </button>
+      </div>
     </div>
   </header>
 
   <div id="toast" class="toast fixed top-20 right-8 z-50 opacity-0 pointer-events-none"></div>
 
-  <div class="p-8 max-w-[1440px] mx-auto w-full space-y-6">
+  <div class="p-8 w-full space-y-6">
 
     <!-- DASHBOARD VIEW -->
-    <section id="view-dashboard" class="view active space-y-6">
+    <section id="view-dashboard" class="view active space-y-6 max-w-[1440px] mx-auto w-full">
       <div>
         <h2 class="text-2xl font-bold text-on-surface">Executive Dashboard</h2>
         <p class="text-on-surface-variant text-sm">Resolved identities and consolidated wealth across the group</p>
@@ -147,7 +237,7 @@
 
       <div>
         <h3 class="text-lg font-bold text-on-surface">Entity Resolution In Action</h3>
-        <p class="text-on-surface-variant text-sm">One resolved cluster from the live dataset, before and after Splink</p>
+        <p class="text-on-surface-variant text-sm">One resolved cluster from the live dataset, before and after linking</p>
       </div>
       <div id="showcase-content"></div>
 
@@ -177,7 +267,7 @@
     <section id="view-directory" class="view space-y-6">
       <div class="flex items-center justify-between gap-4">
         <div>
-          <h2 class="text-2xl font-bold text-on-surface">Customer Directory</h2>
+          <h2 class="text-2xl font-bold text-on-surface">Employee Directory</h2>
           <p class="text-on-surface-variant text-sm">Search resolved Single View of Wealth profiles by name</p>
         </div>
         <button id="btn-export-directory" class="border border-border px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-surface-container-high transition-colors shrink-0">
@@ -208,12 +298,72 @@
       </div>
     </section>
 
+    <!-- EMPLOYEE SEGMENTS VIEW -->
+    <section id="view-segments" class="view space-y-6 max-w-[1440px] mx-auto w-full">
+      <div>
+        <h2 class="text-2xl font-bold text-on-surface">Employee Segments</h2>
+        <p class="text-on-surface-variant text-sm">Resolved profiles grouped into net-worth tiers for proposition targeting</p>
+      </div>
+
+      <div id="segment-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+
+      <div class="grid grid-cols-12 gap-6">
+        <div class="col-span-12 lg:col-span-6 wealth-card rounded-xl p-8 min-h-[400px] flex flex-col">
+          <h3 class="font-title-lg text-title-lg mb-1">Employees per Segment</h3>
+          <p class="text-on-surface-variant text-body-md mb-8">Population share across the 5 net-worth tiers</p>
+          <div class="flex-1"><canvas id="chart-segment-population"></canvas></div>
+          <div id="segment-population-legend" class="grid grid-cols-3 gap-4 mt-8 pt-6 border-t border-outline-variant/30"></div>
+        </div>
+        <div class="col-span-12 lg:col-span-6 wealth-card rounded-xl p-8 min-h-[400px] flex flex-col">
+          <h3 class="font-title-lg text-title-lg mb-1">Net Wealth per Segment</h3>
+          <p class="text-on-surface-variant text-body-md mb-8">Total net wealth under management, by tier</p>
+          <div class="flex-1"><canvas id="chart-segment-wealth"></canvas></div>
+        </div>
+      </div>
+
+      <div id="segment-members-panel" class="wealth-card rounded-lg overflow-hidden hidden">
+        <div class="p-6 border-b border-border flex justify-between items-center gap-4">
+          <div>
+            <h3 id="segment-members-title" class="text-base font-semibold"></h3>
+            <p class="text-on-surface-variant text-xs">Resolved profiles assigned to this tier, highest net worth first</p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button id="btn-export-segment-members" class="border border-border px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 hover:bg-surface-container-high transition-colors">
+              <span class="material-symbols-outlined text-base">download</span> Export CSV
+            </button>
+            <button id="btn-close-segment-members" class="border border-border px-3 py-2 rounded-lg text-xs font-semibold hover:bg-surface-container-high transition-colors">
+              <span class="material-symbols-outlined text-base">close</span>
+            </button>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <p id="segment-members-caption" class="px-5 py-3 text-xs text-on-surface-variant border-b border-border"></p>
+          <table class="w-full text-left">
+            <thead>
+              <tr class="bg-surface-container-high text-on-surface-variant text-[10px] uppercase tracking-wider">
+                <th class="px-5 py-3">Master ID</th>
+                <th class="px-5 py-3">Name</th>
+                <th class="px-5 py-3">Subsidiaries</th>
+                <th class="px-5 py-3 text-right">Salary</th>
+                <th class="px-5 py-3 text-right">Net Wealth</th>
+                <th class="px-5 py-3 text-center">Confidence</th>
+                <th class="px-5 py-3 text-center">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="segment-members-rows" class="divide-y divide-border/60"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
     <!-- DATA QUALITY VIEW -->
-    <section id="view-quality" class="view space-y-6">
+    <section id="view-quality" class="view space-y-6 max-w-[1440px] mx-auto w-full">
       <div>
         <h2 class="text-2xl font-bold text-on-surface">Data Quality &amp; Linkage Analytics</h2>
-        <p class="text-on-surface-variant text-sm">How confidently Splink resolved this run's records</p>
+        <p class="text-on-surface-variant text-sm">How confidently probabilistic linkage resolved this run's records</p>
       </div>
+
+      <div id="quality-kpi-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4"></div>
 
       <div class="grid grid-cols-12 gap-6">
         <div class="col-span-12 lg:col-span-6 wealth-card rounded-lg p-6">
@@ -256,7 +406,7 @@
     </section>
 
     <!-- SETTINGS VIEW -->
-    <section id="view-settings" class="view space-y-6">
+    <section id="view-settings" class="view space-y-6 max-w-[1440px] mx-auto w-full">
       <div>
         <h2 class="text-2xl font-bold text-on-surface">Settings</h2>
         <p class="text-on-surface-variant text-sm">Your account on the Single View of Wealth platform</p>
@@ -281,9 +431,9 @@
     </section>
 
     <!-- PROFILE DETAIL VIEW -->
-    <section id="view-profile" class="view space-y-6">
+    <section id="view-profile" class="view space-y-6 max-w-[1440px] mx-auto w-full">
       <button id="btn-back-directory" class="flex items-center gap-1 text-sm text-on-surface-variant hover:text-primary transition-colors">
-        <span class="material-symbols-outlined text-base">arrow_back</span> Back to Directory
+        <span class="material-symbols-outlined text-base">arrow_back</span> <span id="btn-back-directory-label">Back to Directory</span>
       </button>
 
       <div id="profile-content" class="space-y-6"></div>
@@ -291,6 +441,11 @@
 
   </div>
 </main>
+</div>
+
+<div class="fixed inset-0 pointer-events-none z-0">
+  <div class="absolute top-0 right-0 w-[800px] h-[800px] bg-primary/5 blur-[120px] rounded-full opacity-30"></div>
+  <div class="absolute bottom-0 left-72 w-[600px] h-[600px] bg-primary-container/5 blur-[100px] rounded-full opacity-20"></div>
 </div>
 
 <script src="/static/app.js"></script>

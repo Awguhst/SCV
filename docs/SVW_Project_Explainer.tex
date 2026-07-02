@@ -169,7 +169,7 @@ Generated \today.
 \chapter{Executive Summary}
 % =============================================================================
 
-\textbf{Single View of Wealth (SVW)} is a working demonstration of how a banking group with several subsidiaries can stop treating each subsidiary's customer data as a separate island, and instead see \emph{one consolidated picture of wealth} for every individual across the whole group --- automatically, and without asking any subsidiary to change its own systems first.
+\textbf{Single View of Wealth (SVW)} is a working demonstration of how a banking group with several subsidiaries can stop treating each subsidiary's employee data as a separate island, and instead see \emph{one consolidated picture of wealth} for every individual across the whole group --- automatically, and without asking any subsidiary to change its own systems first.
 
 The proof of concept (PoC) does three things end-to-end, live, in front of a viewer:
 
@@ -182,20 +182,20 @@ The proof of concept (PoC) does three things end-to-end, live, in front of a vie
 All of this is wrapped in a polished web dashboard and a documented REST API, so it can be demoed live, explored by a technical evaluator, or scripted end-to-end from the command line (\texttt{demo.py}) with no server at all.
 
 \begin{bizbox}
-\textbf{Why a buyer should care.} Most banking groups grew by acquisition or by spinning up subsidiaries with their own core banking systems. None of them share a customer ID. The result: the group cannot answer simple questions like \emph{``what is our total relationship with this household?''}, cannot cross-sell effectively, under-prices risk, and struggles with KYC/AML obligations that require knowing who their customers really are across the whole group. This PoC proves, on realistic synthetic data, that the hard part -- resolving identity across messy, independently-captured records -- is solvable today, with mature open-source technology, in well under a minute, on a single laptop.
+\textbf{Why a buyer should care.} Most banking groups grew by acquisition or by spinning up subsidiaries with their own core banking systems. None of them share an employee ID. The result: the group cannot answer simple questions like \emph{``what is our total relationship with this household?''}, cannot cross-sell effectively, under-prices risk, and struggles with KYC/AML obligations that require knowing who their employees really are across the whole group. This PoC proves, on realistic synthetic data, that the hard part -- resolving identity across messy, independently-captured records -- is solvable today, with mature open-source technology, in well under a minute, on a single laptop.
 \end{bizbox}
 
 \begin{engbox}
-\textbf{What's genuinely real here vs.\ simulated.} The data is 100\% synthetic (Faker-generated, seeded for reproducibility) -- nothing here is a real customer. What \emph{is} real is the entity-resolution methodology: Splink's probabilistic (Fellegi--Sunter) matching model, trained with Expectation-Maximisation, scored and clustered exactly as it would be against production data. The PoC also keeps a hidden ``ground truth'' (which records really belong to which synthetic person) purely so it can measure its own precision/recall -- a luxury that disappears in production, where this same pipeline would run unchanged but unverified by ground truth.
+\textbf{What's genuinely real here vs.\ simulated.} The data is 100\% synthetic (Faker-generated, seeded for reproducibility) -- nothing here is a real employee. What \emph{is} real is the entity-resolution methodology: Splink's probabilistic (Fellegi--Sunter) matching model, trained with Expectation-Maximisation, scored and clustered exactly as it would be against production data. The PoC also keeps a hidden ``ground truth'' (which records really belong to which synthetic person) purely so it can measure its own precision/recall -- a luxury that disappears in production, where this same pipeline would run unchanged but unverified by ground truth.
 \end{engbox}
 
 % =============================================================================
 \chapter{The Business Problem}
 % =============================================================================
 
-\section{Why subsidiaries can't see the whole customer}
+\section{Why subsidiaries can't see the whole employee}
 
-Picture a banking group with five subsidiaries: a retail bank, a wealth manager, a trust company, a commercial bank, and a private bank. Each was built or bought at a different time, on different core banking software, with its own employee/payroll system and its own customer-onboarding process. None of them were ever designed to talk to each other, and none of them share a common customer or employee identifier.
+Picture a banking group with five subsidiaries: a retail bank, a wealth manager, a trust company, a commercial bank, and a private bank. Each was built or bought at a different time, on different core banking software, with its own employee/payroll system and its own employee-onboarding process. None of them were ever designed to talk to each other, and none of them share a common employee identifier.
 
 When the same person -- say, a senior employee who also banks personally with two of the group's subsidiaries -- shows up in all five systems, each system has its own slightly different snapshot of who they are:
 
@@ -215,9 +215,9 @@ None of this is a data-entry failure to be blamed on any one team. It is the \em
 
 \begin{itemize}
 \item \textbf{Missed commercial opportunity.} A private banking subsidiary cannot identify that one of its high-net-worth clients is also a payroll-earning senior employee at the group's commercial bank -- a natural cross-sell and relationship-pricing opportunity that simply never surfaces.
-\item \textbf{Mispriced risk.} Credit and exposure decisions made subsidiary-by-subsidiary underestimate a customer's true indebtedness or overstate their true liquidity, because no single view of their mortgage, savings and investment position exists.
-\item \textbf{Regulatory and KYC/AML exposure.} ``Know Your Customer'' and anti-money-laundering obligations increasingly expect a group-wide view of a customer relationship, not five fragmented ones. Failing to produce one is a genuine compliance and audit finding waiting to happen.
-\item \textbf{Poor customer experience.} Customers experience the group as five unconnected companies, repeating the same information five times, with no acknowledgement that the bank already knows them elsewhere in the group.
+\item \textbf{Mispriced risk.} Credit and exposure decisions made subsidiary-by-subsidiary underestimate an employee's true indebtedness or overstate their true liquidity, because no single view of their mortgage, savings and investment position exists.
+\item \textbf{Regulatory and KYC/AML exposure.} ``Know Your Customer'' and anti-money-laundering obligations increasingly expect a group-wide view of an employee relationship, not five fragmented ones. Failing to produce one is a genuine compliance and audit finding waiting to happen.
+\item \textbf{Poor employee experience.} Employees experience the group as five unconnected companies, repeating the same information five times, with no acknowledgement that the bank already knows them elsewhere in the group.
 \end{itemize}
 
 \section{Why this is hard, not just tedious}
@@ -266,7 +266,7 @@ The platform is a four-stage pipeline. Figure~\ref{fig:pipeline} shows the flow;
 
 \section{Stage 1: Simulating the problem}
 
-Rather than risk (or need) real customer data, the PoC generates its own realistic population using \textbf{Faker}, a library that produces plausible-looking but entirely fictional names, addresses, emails and dates. It then simulates, in software, exactly the kind of imperfect data capture described in Chapter~2: nicknames, abbreviated addresses, reformatted phone numbers, missing fields, and so on. Every run uses the same random seed, so the same demo always produces the same (impressive) results.
+Rather than risk (or need) real employee data, the PoC generates its own realistic population using \textbf{Faker}, a library that produces plausible-looking but entirely fictional names, addresses, emails and dates. It then simulates, in software, exactly the kind of imperfect data capture described in Chapter~2: nicknames, abbreviated addresses, reformatted phone numbers, missing fields, and so on. Every run uses the same random seed, so the same demo always produces the same (impressive) results.
 
 \section{Stage 2: Resolving identity (entity resolution)}
 
@@ -406,7 +406,7 @@ Every dependency is pinned to a version range in \texttt{app/requirements.txt}. 
 
 \section{Purpose and reproducibility}
 
-Because this is a PoC and no real customer data is available (or should be used), \texttt{data\_generator.py} builds an entirely synthetic but statistically realistic population, and then simulates how five independent subsidiary IT systems would \emph{imperfectly} capture that same population. Every random draw is seeded (\code{SEED = 777}), so the exact same dataset --- and therefore the exact same demo --- is produced on every machine, every time.
+Because this is a PoC and no real employee data is available (or should be used), \texttt{data\_generator.py} builds an entirely synthetic but statistically realistic population, and then simulates how five independent subsidiary IT systems would \emph{imperfectly} capture that same population. Every random draw is seeded (\code{SEED = 777}), so the exact same dataset --- and therefore the exact same demo --- is produced on every machine, every time.
 
 \begin{engbox}
 Reproducibility is achieved with a dedicated \code{random.Random(seed)} instance threaded through every generation function (never the global \code{random} module), plus \code{Faker.seed(seed)} for the Faker-driven fields. This means two calls to \code{generate_all()} with the same seed are bit-for-bit identical, which is what lets the threshold-sweeping precision/recall analysis in Chapter~\ref{ch:splink} be trusted.
@@ -497,7 +497,7 @@ Shifting (adding the lognormal excess \emph{on top of} a floor) rather than simp
 This same function (with different parameters) drives annual salary (floor \textsterling30,000, capped at \textsterling250,000), current-account balances (floor \textsterling50, capped at \textsterling50,000), savings (floor \textsterling200, capped at \textsterling200,000), and investments (floor \textsterling500, capped at \textsterling500,000). Bonuses use a \textbf{Beta(2,5)} distribution (skewed toward modest payouts, capped at 50\% of salary), and mortgage balances use a \textbf{triangular distribution} centred on a 3.5$\times$-salary affordability multiple (realistic UK mortgage-lending behaviour), clamped to \textsterling50,000--\textsterling600,000.
 
 \begin{bizbox}
-Net wealth is deliberately defined as cash + savings + investments $-$ mortgage, with no offsetting property-value asset. This means a customer with only payroll income and a mortgage will show a \emph{negative} net wealth figure on the dashboard -- this is by design (matching the agreed wealth formula), not a bug, and is worth pre-empting in a demo before a sharp-eyed viewer asks about it.
+Net wealth is deliberately defined as cash + savings + investments $-$ mortgage, with no offsetting property-value asset. This means an employee with only payroll income and a mortgage will show a \emph{negative} net wealth figure on the dashboard -- this is by design (matching the agreed wealth formula), not a bug, and is worth pre-empting in a demo before a sharp-eyed viewer asks about it.
 \end{bizbox}
 
 \section{The unified \texttt{records} table}
@@ -652,7 +652,7 @@ Pairwise recall (payroll-only sweep, historical) & \textasciitilde98\% \\
 \end{table}
 
 \begin{bizbox}
-\textbf{Precision} means: of the records the system says belong together, how many actually do? \textbf{Recall} means: of the records that actually belong together, how many did the system successfully find? Near-100\% precision with \textasciitilde98\% recall means the system is extremely trustworthy when it does link two records (very few false merges), while still catching the overwhelming majority of true duplicates -- exactly the trade-off a bank should want: it is far worse to wrongly merge two different customers' financial data than to occasionally leave two records of the same person unlinked (which the manual review queue exists to catch).
+\textbf{Precision} means: of the records the system says belong together, how many actually do? \textbf{Recall} means: of the records that actually belong together, how many did the system successfully find? Near-100\% precision with \textasciitilde98\% recall means the system is extremely trustworthy when it does link two records (very few false merges), while still catching the overwhelming majority of true duplicates -- exactly the trade-off a bank should want: it is far worse to wrongly merge two different employees' financial data than to occasionally leave two records of the same person unlinked (which the manual review queue exists to catch).
 \end{bizbox}
 
 % =============================================================================
@@ -840,7 +840,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
 Two demo accounts are seeded automatically on first startup: \texttt{admin} / \texttt{admin123} and \texttt{analyst} / \texttt{analyst123}.
 
 \begin{bizbox}
-Role-based access control isn't just a login screen -- it maps directly onto a real operational concern: in a production deployment, \emph{running} the entity-resolution pipeline (which rebuilds the entire customer view) should be a privileged, audited action, while \emph{reading} resolved profiles for day-to-day relationship management should be available to a much broader analyst population. This PoC already models that separation.
+Role-based access control isn't just a login screen -- it maps directly onto a real operational concern: in a production deployment, \emph{running} the entity-resolution pipeline (which rebuilds the entire employee view) should be a privileged, audited action, while \emph{reading} resolved profiles for day-to-day relationship management should be available to a much broader analyst population. This PoC already models that separation.
 \end{bizbox}
 
 \begin{engbox}
@@ -863,7 +863,7 @@ Role-based access control isn't just a login screen -- it maps directly onto a r
 \end{itemize}
 
 \begin{bizbox}
-The PDF export is a tangible, leave-behind artifact for a sales meeting: a single resolved customer's full Single View of Wealth, with its supporting evidence (every linked record and its confidence score), as a document a relationship manager could genuinely attach to a case file.
+The PDF export is a tangible, leave-behind artifact for a sales meeting: a single resolved employee's full Single View of Wealth, with its supporting evidence (every linked record and its confidence score), as a document a relationship manager could genuinely attach to a case file.
 \end{bizbox}
 
 % =============================================================================
@@ -952,7 +952,7 @@ All persistent state lives in a single DuckDB file, \texttt{data/svow.duckdb}, o
 \end{longtable}
 
 \begin{engbox}
-A person may hold zero, one, or several rows of a given banking-product type, each independently tagged with the subsidiary it sits at and independently noised -- reflecting how a real banking group's customers genuinely do scatter products across subsidiary banks (a mortgage at one, savings at another), each captured imperfectly by that subsidiary's own system.
+A person may hold zero, one, or several rows of a given banking-product type, each independently tagged with the subsidiary it sits at and independently noised -- reflecting how a real banking group's employees genuinely do scatter products across subsidiary banks (a mortgage at one, savings at another), each captured imperfectly by that subsidiary's own system.
 \end{engbox}
 
 % =============================================================================
@@ -962,7 +962,7 @@ A person may hold zero, one, or several rows of a given banking-product type, ea
 
 This chapter anticipates the questions a technically literate prospect, auditor, or internal stakeholder is likely to ask, so a presenter doesn't have to improvise an answer live.
 
-\begin{qabox}{Q: Is any of this real customer data?}
+\begin{qabox}{Q: Is any of this real employee data?}
 No. Every person, address, email and financial figure is generated by Faker and the statistical models in \texttt{data\_generator.py} (Chapter~\ref{ch:datagen}). The dataset is fully synthetic and reproducible (fixed random seed), and contains no real individuals.
 \end{qabox}
 
@@ -1011,7 +1011,7 @@ Every item below is a deliberate, documented PoC-scope decision (see \texttt{REA
 
 \begin{itemize}
 \item \textbf{Single currency.} All amounts are generated in GBP only; a \code{currency} column exists for schema completeness, but no FX conversion is implemented.
-\item \textbf{Net wealth excludes property value.} Net wealth is cash + savings + investments $-$ mortgage; it does not model property value as an offsetting asset. A ``payroll + mortgage only'' customer therefore necessarily shows negative net wealth \emph{by design}, not as a bug -- worth pre-empting before a viewer asks.
+\item \textbf{Net wealth excludes property value.} Net wealth is cash + savings + investments $-$ mortgage; it does not model property value as an offsetting asset. A ``payroll + mortgage only'' employee therefore necessarily shows negative net wealth \emph{by design}, not as a bug -- worth pre-empting before a viewer asks.
 \item \textbf{Banking-product noise reuses the payroll noise model.} Product records reuse the exact same nickname/abbreviation/typo/missing-value functions as payroll, rather than modelling product-specific data-quality patterns (e.g.\ a bank's own onboarding form might have different failure modes than its payroll feed) separately.
 \item \textbf{Precision/recall figures are historical.} The \textasciitilde100\%/\textasciitilde98\% pairwise precision/recall figures were measured by sweeping the cluster threshold against ground truth back when the linkage pool was payroll-only; that sweep has not been re-run since banking products joined the same pool, and there is no in-repo tooling to re-run it beyond the one-off development exercise that produced the original figures.
 \item \textbf{DuckDB is single-writer, opened per request.} Appropriate for a demo or low-concurrency internal tool; a production, multi-analyst deployment would need a database that supports concurrent writers (e.g.\ Postgres), or a write-serialising service layer in front of DuckDB.
